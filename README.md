@@ -40,6 +40,26 @@ Node.js Bot Runners          ←  Satu proses per agent, di-spawn oleh Go
 Telegram Bots               ←  Satu bot token per agent (dari BotFather)
 ```
 
+## 🧭 Cara Kerja Project
+
+Project ini berjalan sebagai beberapa proses yang dikendalikan dari satu backend Go. Perintah utama untuk menjalankan semuanya adalah:
+
+```bash
+make start
+```
+
+Perintah tersebut memanggil `scripts/start-all.sh`. Script ini akan membangun ulang binary backend jika file Go berubah, membebaskan port `8080` dan `5173` bila masih dipakai, mencoba menjalankan PostgreSQL di `5432` untuk memory `pgvector`, lalu menjalankan Go API backend dan Vite dashboard.
+
+Setelah platform aktif, dashboard di `http://localhost:5173` menjadi pusat kontrol. Frontend mengirim request REST/SSE ke Go API di `http://localhost:8080` untuk membaca daftar agent, start/stop bot, mengganti model, mengedit persona, dan menampilkan live log.
+
+Backend membaca konfigurasi global dari `credentials/.env` dan credential per-agent dari `credentials/agents/*.env`. Saat sebuah agent distart dari dashboard, backend membuat proses Node.js baru dari `bots/agents/<agent-id>/index.js`, lalu menyuntikkan environment seperti token Telegram, model, path `SOUL.md`, URL OpenClaw Gateway, dan koneksi memory.
+
+Bot runner menerima pesan dari Telegram, memuat persona dari `SOUL.md`, mengambil memory relevan dari PostgreSQL/pgvector jika tersedia, lalu membentuk prompt untuk dikirim ke OpenClaw Gateway di `:14000` atau model yang dikonfigurasi. Jika PostgreSQL atau embedding service tidak tersedia, modul memory akan terdegradasi secara non-fatal sehingga agent tetap bisa merespons.
+
+Semua output `stdout` dan `stderr` dari proses bot ditangkap oleh backend. Log tersebut disimpan di channel internal dan dialirkan ke dashboard menggunakan Server-Sent Events (SSE), sehingga aktivitas agent bisa dipantau langsung dari web UI.
+
+> **Catatan keamanan:** jangan pernah menulis credential nyata ke README atau file yang dilacak Git. Gunakan placeholder seperti `<TELEGRAM_BOT_TOKEN>`, `<OPENCLAW_GW_TOKEN>`, `<PROVIDER_API_KEY>`, atau `postgresql://<user>:<password>@<host>:<port>/<db>` saat membuat contoh konfigurasi.
+
 ## 📁 Struktur Direktori
 
 ```
