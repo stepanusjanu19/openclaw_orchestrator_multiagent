@@ -1,0 +1,61 @@
+# ----------------------------------------------------------------------
+# CORS, Permissions & Security Headers
+# ----------------------------------------------------------------------
+<IfModule mod_headers.c>
+    # Prevents clickjacking
+    Header set X-Frame-Options "DENY"
+
+    # Prevents MIME-sniffing
+    Header set X-Content-Type-Options "nosniff"
+
+    # Strict strict origin policies
+    Header always set Cross-Origin-Embedder-Policy "require-corp"
+    Header always set Cross-Origin-Opener-Policy "same-origin"
+
+    # Enables Cross-Site Scripting (XSS) filter
+    Header set X-XSS-Protection "1; mode=block"
+
+    # Referrer policy (protects origin data)
+    Header always set Referrer-Policy "no-referrer"
+</IfModule>
+
+# ----------------------------------------------------------------------
+# Secure Caching Policies
+# ----------------------------------------------------------------------
+<IfModule mod_headers.c>
+    # Cache static assets like JS/CSS/Images but forces validation for HTML
+    <FilesMatch "\.(html|htm)$">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+        Header set Pragma "no-cache"
+        Header set Expires "0"
+    </FilesMatch>
+</IfModule>
+
+# ----------------------------------------------------------------------
+# Block Hidden Files & Directories (e.g. .env, .git)
+# ----------------------------------------------------------------------
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{SCRIPT_FILENAME} -d [OR]
+    RewriteCond %{SCRIPT_FILENAME} -f
+    RewriteRule "(^|/)\." - [F]
+</IfModule>
+
+# ----------------------------------------------------------------------
+# Directory Listing Denial (OWASP)
+# ----------------------------------------------------------------------
+<IfModule mod_autoindex.c>
+    Options -Indexes
+</IfModule>
+
+# ----------------------------------------------------------------------
+# Vue/Vite SPA Router Fallback Rule
+# ----------------------------------------------------------------------
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+    RewriteRule ^index\.html$ - [L]
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule . /index.html [L]
+</IfModule>

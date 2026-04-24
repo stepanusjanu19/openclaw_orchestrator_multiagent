@@ -1,0 +1,19 @@
+{
+  "name": "openclaw-bots",
+  "version": "1.0.0",
+  "description": "OpenClaw multi-agent Telegram bot runners",
+  "type": "module",
+  "scripts": {
+    "start:main": "node agents/main/index.js",
+    "start:dev": "node agents/dev/index.js",
+    "start:alpha": "node agents/alpha/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "mem0ai": "^2.4.6",
+    "node-telegram-bot-api": "^0.66.0",
+    "openai": "^6.34.0",
+    "pg": "^8.11.3",
+    "undici": "^8.0.2"
+  }
+}

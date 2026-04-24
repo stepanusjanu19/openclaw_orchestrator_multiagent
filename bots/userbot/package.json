@@ -1,0 +1,11 @@
+{
+  "name": "openclaw-userbot",
+  "version": "1.0.0",
+  "description": "OpenClaw MTProto UserBot – BotFather automation engine",
+  "type": "module",
+  "main": "cli.js",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "telegram": "^2.26.0"
+  }
+}

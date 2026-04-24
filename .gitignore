@@ -1,0 +1,30 @@
+# ═══════════════════════════════════════════════════
+# SECURITY: credentials selalu diexclude dari git
+# ═══════════════════════════════════════════════════
+credentials/.env
+credentials/gateways.json
+credentials/userbot.session
+credentials/agents
+
+# Backend build artifacts
+backend/bin/
+backend/*.exe
+
+# Node modules
+node_modules/
+bots/node_modules/
+
+# Frontend build
+frontend/dist/
+frontend/node_modules/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+.codex
+.backend.pid
