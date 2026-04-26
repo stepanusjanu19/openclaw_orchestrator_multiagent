@@ -1,7 +1,8 @@
 // api/client.ts — API client v2 dengan auth token support
 
 // @ts-ignore
-export const API_BASE = (typeof __API_URL__ !== 'undefined' ? __API_URL__ : import.meta.env.VITE_API_URL) || window.location.origin;
+const definedApiURL = typeof __API_URL__ !== 'undefined' ? __API_URL__ : undefined;
+export const API_BASE = definedApiURL !== undefined ? definedApiURL : (import.meta.env.VITE_API_URL || window.location.origin);
 
 // ── Auth / CSRF ───────────────────────────────────────────────────────────────
 const CSRF_COOKIE = 'ocmap_csrf';
@@ -63,6 +64,35 @@ export interface OCStatus {
   reachable: boolean; gateway_url: string; models: string[];
   detected_agents: DetectedAgent[]; importable_count: number;
   error?: string; checked_at: string;
+}
+
+export interface RouterStatus {
+  enabled: boolean;
+  provider: string;
+  base_url: string;
+  masked_base_url: string;
+  chat_url?: string;
+  require_loopback: boolean;
+  allow_cloud: boolean;
+  token_configured: boolean;
+  tool_calls_allowed: boolean;
+  runtime_tool?: string;
+  runtime_active: boolean;
+  agent_routing_enabled: boolean;
+  binary_trusted?: boolean;
+  binary_resolved_path?: string;
+  runtime_isolated?: boolean;
+  runtime_dir?: string;
+  loopback_enforced?: boolean;
+  process_group_enabled?: boolean;
+  security_warnings?: string[];
+  security_notices?: string[];
+  reachable: boolean;
+  model_count: number;
+  models?: string[];
+  warnings?: string[];
+  error?: string;
+  checked_at: string;
 }
 
 export interface CreateAgentPayload {
@@ -162,6 +192,10 @@ export interface Gateway {
   label: string;
   webhook_url: string;
   active: boolean;
+  public?: boolean;
+  auth_mode?: string;
+  expires_at?: string;
+  expired?: boolean;
   created_at: string;
 }
 
@@ -170,6 +204,126 @@ export interface CreateGatewayPayload {
   platform: string;
   label: string;
   config: Record<string, string>;
+}
+
+export interface SecurityPolicy {
+  masking_mode: 'off' | 'on' | 'strict';
+  logging_mode: 'minimal' | 'audit' | 'debug';
+  template_rendering_enabled: boolean;
+  default_template_id?: string;
+  audit_dropped?: number;
+  audit_write_errors?: number;
+  audit_index_enabled?: boolean;
+}
+
+export interface MaskingRule {
+  id: string;
+  label: string;
+  pattern: string;
+  strategy: 'replace' | 'partial' | 'hash' | 'redact';
+  enabled: boolean;
+  description?: string;
+}
+
+export interface RuleSet {
+  rules: MaskingRule[];
+  updated_at: string;
+}
+
+export interface AuditLogEntry {
+  timestamp: string;
+  request_id?: string;
+  level: string;
+  agent_id?: string;
+  channel?: string;
+  model?: string;
+  prompt_hash?: string;
+  output_hash?: string;
+  masking_mode?: string;
+  latency_ms?: number;
+  status?: string;
+  error_class?: string;
+  message?: string;
+  metadata?: Record<string, any>;
+}
+
+export interface VisitorRecord {
+  occurred_at: string;
+  request_id: string;
+  gateway_id?: string;
+  agent_id?: string;
+  channel?: string;
+  status?: string;
+  decision?: string;
+  risk_score?: number;
+  risk_reasons?: string[];
+  visitor_ip?: string;
+  visitor_hash?: string;
+  ip_hash?: string;
+  ip_class?: string;
+  subnet?: string;
+  cidr?: string;
+  proxy_chain_depth?: number;
+  asn?: string;
+  org?: string;
+  country?: string;
+  region?: string;
+  city?: string;
+  latitude?: number;
+  longitude?: number;
+  accuracy_km?: number;
+  timezone?: string;
+  geo_source?: string;
+  dns_provider?: string;
+  reverse_dns?: string;
+  user_agent_family?: string;
+  user_agent_hash?: string;
+  host_hash?: string;
+  origin_hash?: string;
+  proto?: string;
+  method?: string;
+  content_type?: string;
+  body_bytes?: number;
+  metadata?: Record<string, any>;
+}
+
+export interface VisitorQueryResult {
+  rows: VisitorRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface SecurityTemplate {
+  id?: string;
+  name: string;
+  type: string;
+  content: string;
+  created_at?: string;
+  updated_at?: string;
+  version?: number;
+  validation_status?: string;
+}
+
+export interface TemplateValidation {
+  valid: boolean;
+  errors: string[];
+  placeholders: string[];
+}
+
+export interface SystemMetrics {
+  timestamp: string;
+  cpu_percent: number;
+  load_1: number;
+  num_cpu: number;
+  memory_used_mb: number;
+  memory_total_mb: number;
+  memory_percent: number;
+  disk_used_gb: number;
+  disk_total_gb: number;
+  disk_percent: number;
+  go_heap_alloc_mb: number;
+  go_goroutines: number;
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -275,6 +429,10 @@ export const api = {
 
   // OpenClaw
   getOCStatus(): Promise<OCStatus> { return request('/api/openclaw/status'); },
+  getRouterStatus(tool?: string): Promise<RouterStatus> {
+    const query = tool ? `?tool=${encodeURIComponent(tool)}` : '';
+    return request(`/api/router/status${query}`);
+  },
   importOCAgent(id: string): Promise<{ agent: DetectedAgent; message: string }> {
     return request(`/api/openclaw/import/${id}`, { method: 'POST' });
   },
@@ -352,7 +510,7 @@ export const api = {
     const qs = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
     return request(`/api/gateway${qs}`);
   },
-  createGateway(payload: CreateGatewayPayload): Promise<{ message: string; id: string; webhook_url: string }> {
+  createGateway(payload: CreateGatewayPayload): Promise<{ message: string; id: string; webhook_url: string; webhook_secret?: string; auth_mode?: string; expires_at?: string }> {
     return request('/api/gateway', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -374,15 +532,64 @@ export const api = {
     });
   },
 
+  // Security
+  getSecurityPolicy(): Promise<SecurityPolicy> {
+    return request('/api/security/policy');
+  },
+  updateSecurityPolicy(payload: SecurityPolicy): Promise<SecurityPolicy> {
+    return request('/api/security/policy', { method: 'PUT', body: JSON.stringify(payload) });
+  },
+  getMaskingRules(): Promise<RuleSet> {
+    return request('/api/security/masking/rulesets');
+  },
+  updateMaskingRules(rules: MaskingRule[]): Promise<RuleSet> {
+    return request('/api/security/masking/rulesets', { method: 'PUT', body: JSON.stringify({ rules }) });
+  },
+	  getAuditLogs(filters?: { agent_id?: string; level?: string; channel?: string; status?: string; q?: string; limit?: number }): Promise<{ logs: AuditLogEntry[] }> {
+    const qs = new URLSearchParams();
+    if (filters?.agent_id) qs.set('agent_id', filters.agent_id);
+    if (filters?.level) qs.set('level', filters.level);
+    if (filters?.channel) qs.set('channel', filters.channel);
+    if (filters?.status) qs.set('status', filters.status);
+    if (filters?.q) qs.set('q', filters.q);
+    if (filters?.limit) qs.set('limit', String(filters.limit));
+    const query = qs.toString();
+	    return request(`/api/security/audit-logs${query ? `?${query}` : ''}`);
+	  },
+	  getVisitors(filters?: { q?: string; limit?: number; offset?: number }): Promise<VisitorQueryResult> {
+	    const qs = new URLSearchParams();
+	    if (filters?.q) qs.set('q', filters.q);
+	    if (filters?.limit) qs.set('limit', String(filters.limit));
+	    if (filters?.offset) qs.set('offset', String(filters.offset));
+	    const query = qs.toString();
+	    return request(`/api/visitors${query ? `?${query}` : ''}`);
+	  },
+  getSecurityTemplates(): Promise<{ templates: SecurityTemplate[] }> {
+    return request('/api/security/templates');
+  },
+  saveSecurityTemplate(payload: SecurityTemplate): Promise<SecurityTemplate> {
+    return request('/api/security/templates', { method: payload.id ? 'PUT' : 'POST', body: JSON.stringify(payload) });
+  },
+  deleteSecurityTemplate(id: string): Promise<{ message: string }> {
+    return request(`/api/security/templates/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+  validateSecurityTemplate(content: string): Promise<TemplateValidation> {
+    return request('/api/security/templates/validate', { method: 'POST', body: JSON.stringify({ content }) });
+  },
+
+  getSystemMetrics(): Promise<SystemMetrics> {
+    return request('/api/system/metrics');
+  },
+
   // Code Tools (Claude Code + OpenCode)
   getCodeToolsStatus(): Promise<{ tools: CodeToolStatus[] }> {
     return request('/api/code-tools/status');
   },
   // Note: install & uninstall use fetch() with streaming directly in CodeToolsPage
-  startCodeTool(tool: string, apiKey?: string, provider?: string): Promise<{ ok: boolean; message: string; pid: number }> {
+  startCodeTool(tool: string, apiKey?: string, provider?: string, listenPort?: number): Promise<{ ok: boolean; message: string; pid: number; endpoint?: string }> {
     return request('/api/code-tools/start', {
       method: 'POST',
-      body: JSON.stringify({ tool, api_key: apiKey ?? '', provider: provider ?? 'anthropic' }),
+      body: JSON.stringify({ tool, api_key: apiKey ?? '', provider: provider ?? 'anthropic', listen_port: listenPort || undefined }),
       headers: { 'Content-Type': 'application/json' },
     });
   },
@@ -400,14 +607,44 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
     });
   },
+  stopUnmanagedCodeTool(tool: string, pid?: number, listenPort?: number): Promise<{ ok: boolean; message: string }> {
+    return request('/api/code-tools/stop-unmanaged', {
+      method: 'POST',
+      body: JSON.stringify({ tool, pid: pid || undefined, listen_port: listenPort || undefined }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+  },
+  streamCodeToolLogs(tool: string): EventSource {
+    const base = API_BASE || window.location.origin;
+    return new EventSource(`${base}/api/code-tools/logs/${encodeURIComponent(tool)}`, { withCredentials: true });
+  },
 };
 
 export interface CodeToolStatus {
   tool: string;
   installed: boolean;
   running: boolean;
+  managed?: boolean;
+  control_state?: string;
   version?: string;
   bin_path?: string;
   ready: boolean;
   validation_message?: string;
+  listen_host?: string;
+  listen_port?: number;
+  endpoint?: string;
+  port_available?: boolean;
+  port_owner?: string;
+  unmanaged_pid?: number;
+  unmanaged_command?: string;
+  can_stop_unmanaged?: boolean;
+  conflict_message?: string;
+  binary_trusted?: boolean;
+  binary_resolved_path?: string;
+  runtime_isolated?: boolean;
+  runtime_dir?: string;
+  loopback_enforced?: boolean;
+  process_group_enabled?: boolean;
+  security_warnings?: string[];
+  security_notices?: string[];
 }

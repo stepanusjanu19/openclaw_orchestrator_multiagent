@@ -24,8 +24,13 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const AGENT_ID = process.env.AGENT_ID;
 const MODEL = process.env.OPENCLAW_MODEL;
 const GW_URL = process.env.OPENCLAW_GW_URL;
-const INTERNAL_TOKEN = process.env.OPENCLAW_INTERNAL_TOKEN || "";
-const BACKEND_URL = process.env.OPENCLAW_BACKEND_URL || "http://127.0.0.1:8080";
+
+function redactSecrets(value) {
+  return String(value || "")
+    .replace(/\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/g, "[REDACTED_TELEGRAM_TOKEN]")
+    .replace(/\b(?:sk|pk|xox[baprs]|ghp|gho|AIza)[A-Za-z0-9_\-]{16,}\b/g, "[REDACTED_API_KEY]")
+    .replace(/(authorization|api[_-]?key|access[_-]?token|auth[_-]?token|gateway[_-]?token|password|secret)(["'\s:=]+)([^"',\s}]+)/gi, "$1$2[REDACTED]");
+}
 const runtime = createAgentRuntime();
 
 export function createBot() {
@@ -83,11 +88,11 @@ export function createBot() {
         }
 
         if (msg.includes("EFATAL")) return;
-        console.error(`⚠️ [${AGENT_ID}] Polling error: ${msg}`);
+        console.error(`⚠️ [${AGENT_ID}] Polling error: ${redactSecrets(msg)}`);
       });
 
       bot.on("error", (err) => {
-        console.error(`❌ [${AGENT_ID}] Bot error: ${err.message || err}`);
+        console.error(`❌ [${AGENT_ID}] Bot error: ${redactSecrets(err.message || err)}`);
       });
 
       bot.on("message", async (msg) => {
@@ -138,7 +143,7 @@ export function createBot() {
         }
 
         processingChats.add(chatId);
-        console.log(`📨 [${AGENT_ID}/${chatId}] ${displayName}: ${text.slice(0, 80)}`);
+        console.log(`📨 [${AGENT_ID}/${chatId}] ${displayName}: ${text.length} chars`);
         bot.sendChatAction(chatId, "typing");
         let placeholderMsg = null;
         try {
@@ -179,7 +184,7 @@ export function createBot() {
             await bot.sendMessage(chatId, chunk);
           }
         } catch (err) {
-          let detailErr = err.stack ? err.stack : String(err);
+          let detailErr = redactSecrets(err.stack ? err.stack : String(err));
           if (detailErr.length > 500) detailErr = detailErr.substring(0, 500) + "...";
 
           const snapshotError = {
@@ -197,31 +202,15 @@ export function createBot() {
             bot.deleteMessage(chatId, placeholderMsg.message_id).catch(() => { });
           }
 
-          const snapshotText = `\`\`\`json\n// SYSTEM ERROR SNAPSHOT\n${snapshotString}\n\`\`\``;
           try {
-            if (!INTERNAL_TOKEN) throw new Error("INTERNAL_TOKEN tidak tersedia");
-
-            const sendRes = await fetch(`${BACKEND_URL}/api/userbot/send`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${INTERNAL_TOKEN}`
-              },
-              body: JSON.stringify({ chat_id: String(chatId), text: snapshotText })
-            });
-            if (!sendRes.ok) throw new Error(`UserBot HTTP ${sendRes.status}`);
-            console.log(`[${AGENT_ID}] 📤 Error snapshot dikirim via UserBot ke chat ${chatId}`);
-          } catch (ubErr) {
             const logLine = `[${new Date().toISOString()}] [${AGENT_ID}] [CHAT:${chatId}] ${snapshotString}\n`;
-            try {
-              const { appendFileSync } = await import("fs");
-              const { join } = await import("path");
-              const logPath = join(process.cwd(), `agent-error-${AGENT_ID}.log`);
-              appendFileSync(logPath, logLine, "utf8");
-              console.warn(`[${AGENT_ID}][SESSION-LOG] UserBot tidak aktif (${ubErr.message}). Snapshot disimpan ke: ${logPath}`);
-            } catch (fsErr) {
-              console.warn(`[${AGENT_ID}][SESSION-LOG] Gagal tulis log file (${fsErr.message}). Snapshot hanya di terminal.`);
-            }
+            const { appendFileSync } = await import("fs");
+            const { join } = await import("path");
+            const logPath = join(process.cwd(), `agent-error-${AGENT_ID}.log`);
+            appendFileSync(logPath, logLine, "utf8");
+            console.warn(`[${AGENT_ID}][SESSION-LOG] Snapshot error redacted disimpan ke: ${logPath}`);
+          } catch (fsErr) {
+            console.warn(`[${AGENT_ID}][SESSION-LOG] Gagal tulis log file (${redactSecrets(fsErr.message)}). Snapshot hanya di terminal.`);
           }
         } finally {
           clearInterval(typingInterval);

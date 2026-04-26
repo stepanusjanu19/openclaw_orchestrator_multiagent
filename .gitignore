@@ -5,6 +5,7 @@ credentials/.env
 credentials/gateways.json
 credentials/userbot.session
 credentials/agents
+credentials/security/
 
 # Backend build artifacts
 backend/bin/

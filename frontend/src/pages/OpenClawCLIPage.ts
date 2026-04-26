@@ -32,6 +32,7 @@ export class OpenClawCLIPage {
 
   constructor() {
     this.el = document.createElement('div');
+    this.el.className = 'openclaw-cli-page';
     this.build();
   }
 
@@ -56,13 +57,13 @@ export class OpenClawCLIPage {
     const body = document.createElement('div');
     body.className = 'page-body';
     this.contentEl = document.createElement('div');
-    this.contentEl.style.cssText = 'display:grid;grid-template-columns:minmax(280px,420px) minmax(0,1fr);gap:18px;align-items:start;';
+    this.contentEl.className = 'oc-cli-layout';
     body.appendChild(this.contentEl);
     this.el.append(header, body);
   }
 
   private async loadCommands() {
-    this.contentEl.innerHTML = `<div style="color:var(--clr-text-muted);padding:24px">Memuat command map...</div>`;
+    this.contentEl.innerHTML = `<div class="oc-cli-loading">Memuat command map...</div>`;
     try {
       const res = await api.getOpenClawCommands();
       this.commands = res.commands ?? [];
@@ -76,21 +77,21 @@ export class OpenClawCLIPage {
   private render() {
     const categories = Array.from(new Set(this.commands.map(c => c.category))).sort();
     const left = document.createElement('section');
-    left.style.cssText = 'display:flex;flex-direction:column;gap:12px;min-width:0;';
+    left.className = 'oc-cli-sidebar';
     left.innerHTML = `
-      <div style="display:flex;gap:8px;align-items:center">
-        <input id="oc-cli-search" class="form-input" placeholder="Cari command" style="height:38px;min-width:0">
-        <select id="oc-cli-category" class="form-input" style="height:38px;width:150px">
+      <div class="oc-cli-toolbar">
+        <input id="oc-cli-search" class="form-input" placeholder="Cari command">
+        <select id="oc-cli-category" class="form-input">
           <option value="">Semua</option>
           ${categories.map(cat => `<option value="${escapeHTML(cat)}">${escapeHTML(cat)}</option>`).join('')}
         </select>
       </div>
-      <div id="oc-cli-list" style="display:flex;flex-direction:column;gap:8px;max-height:calc(100vh - 250px);overflow:auto;padding-right:4px"></div>
+      <div id="oc-cli-list" class="oc-cli-list"></div>
     `;
 
     const right = document.createElement('section');
     right.id = 'oc-cli-detail';
-    right.style.cssText = 'min-width:0;';
+    right.className = 'oc-cli-detail';
 
     this.contentEl.innerHTML = '';
     this.contentEl.append(left, right);
@@ -113,16 +114,15 @@ export class OpenClawCLIPage {
     list.innerHTML = filtered.map(cmd => {
       const active = cmd.id === this.selectedId;
       return `
-        <button class="btn ${active ? 'btn-primary' : 'btn-ghost'}" data-command="${escapeHTML(cmd.id)}"
-          style="display:flex;align-items:flex-start;justify-content:space-between;text-align:left;height:auto;padding:10px 12px;gap:10px">
-          <span style="min-width:0">
-            <span style="display:block;font-family:monospace;font-size:0.78rem;white-space:normal;word-break:break-word">${escapeHTML(cmd.path.join(' '))}</span>
-            <span style="display:block;font-size:0.7rem;opacity:0.8;margin-top:3px">${escapeHTML(cmd.category)}</span>
+        <button class="oc-cli-command ${active ? 'selected' : ''}" data-command="${escapeHTML(cmd.id)}">
+          <span class="oc-cli-command-copy">
+            <span class="oc-cli-command-path">${escapeHTML(cmd.path.join(' '))}</span>
+            <span class="oc-cli-command-category">${escapeHTML(cmd.category)}</span>
           </span>
-          <span style="font-size:0.68rem;white-space:nowrap">${this.safetyLabel(cmd.safety)}</span>
+          ${this.safetyLabel(cmd.safety)}
         </button>
       `;
-    }).join('') || `<div style="color:var(--clr-text-muted);padding:16px">Tidak ada command cocok.</div>`;
+    }).join('') || `<div class="oc-cli-empty">Tidak ada command cocok.</div>`;
     list.querySelectorAll<HTMLButtonElement>('[data-command]').forEach(btn => {
       btn.addEventListener('click', () => {
         this.selectedId = btn.dataset.command ?? '';
@@ -141,38 +141,38 @@ export class OpenClawCLIPage {
     }
     const docsURL = safeExternalURL(cmd.docs_url);
     detail.innerHTML = `
-      <div style="background:var(--clr-surface);border:1px solid var(--clr-border);border-radius:var(--radius-lg);padding:20px;display:flex;flex-direction:column;gap:16px">
-        <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start">
-          <div style="min-width:0">
-            <div style="font-family:monospace;font-size:1rem;color:var(--clr-text);word-break:break-word">${escapeHTML(cmd.path.join(' '))}</div>
-            <div style="font-size:0.8rem;color:var(--clr-text-muted);margin-top:6px">${escapeHTML(cmd.description)}</div>
+      <div class="oc-cli-detail-card">
+        <div class="oc-cli-detail-head">
+          <div class="oc-cli-detail-title">
+            <div class="oc-cli-detail-path">${escapeHTML(cmd.path.join(' '))}</div>
+            <div class="oc-cli-detail-description">${escapeHTML(cmd.description)}</div>
           </div>
-          <span style="font-size:0.75rem;white-space:nowrap">${this.safetyLabel(cmd.safety)}</span>
+          ${this.safetyLabel(cmd.safety)}
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;font-size:0.72rem;color:var(--clr-text-muted)">
-          <span>Category: <code>${escapeHTML(cmd.category)}</code></span>
-          <span>Runnable: <code>${cmd.runnable ? 'yes' : 'no'}</code></span>
-          <a href="${escapeHTML(docsURL)}" target="_blank" rel="noopener noreferrer" style="color:var(--clr-accent-1)">Docs</a>
+        <div class="oc-cli-meta">
+          <span>Category <code>${escapeHTML(cmd.category)}</code></span>
+          <span>Runnable <code>${cmd.runnable ? 'yes' : 'no'}</code></span>
+          <a href="${escapeHTML(docsURL)}" target="_blank" rel="noopener noreferrer">Docs</a>
         </div>
-        <form id="oc-cli-form" style="display:flex;flex-direction:column;gap:10px">
+        <form id="oc-cli-form" class="oc-cli-form">
           ${(cmd.args ?? []).map(arg => `
-            <label style="display:flex;flex-direction:column;gap:5px;font-size:0.78rem;color:var(--clr-text-2)">
+            <label class="oc-cli-arg">
               ${escapeHTML(arg.label)}${arg.required ? ' *' : ''}
               ${arg.options && arg.options.length ? `
-                <select class="form-input" name="${escapeHTML(arg.name)}" style="height:38px">
+                <select class="form-input" name="${escapeHTML(arg.name)}">
                   ${arg.options.map(opt => `<option value="${escapeHTML(opt)}">${escapeHTML(opt)}</option>`).join('')}
                 </select>
               ` : `
-                <input class="form-input" name="${escapeHTML(arg.name)}" placeholder="${escapeHTML(arg.placeholder ?? '')}" style="height:38px">
+                <input class="form-input" name="${escapeHTML(arg.name)}" placeholder="${escapeHTML(arg.placeholder ?? '')}">
               `}
             </label>
           `).join('')}
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">
+          <div class="oc-cli-actions">
             <button id="oc-cli-run" class="btn btn-primary" type="submit" ${cmd.runnable ? '' : 'disabled'}>Run</button>
             <button id="oc-cli-clear" class="btn btn-ghost" type="button">Clear Output</button>
           </div>
         </form>
-        <pre id="oc-cli-output" style="min-height:180px;max-height:360px;overflow:auto;margin:0;background:var(--clr-bg);border:1px solid var(--clr-border);border-radius:var(--radius-md);padding:12px;font-size:0.74rem;white-space:pre-wrap;word-break:break-word;color:var(--clr-text-muted)"></pre>
+        <pre id="oc-cli-output" class="oc-cli-output"></pre>
       </div>
     `;
     this.outputEl = detail.querySelector<HTMLPreElement>('#oc-cli-output')!;
@@ -247,11 +247,11 @@ export class OpenClawCLIPage {
   private safetyLabel(safety: OpenClawCommand['safety']) {
     switch (safety) {
       case 'read_only':
-        return '<span style="color:#22c55e">read_only</span>';
+        return '<span class="oc-cli-safety read_only">read_only</span>';
       case 'mutating_confirm':
-        return '<span style="color:#f59e0b">mutating_confirm</span>';
+        return '<span class="oc-cli-safety mutating_confirm">mutating_confirm</span>';
       default:
-        return '<span style="color:#ef4444">blocked</span>';
+        return '<span class="oc-cli-safety blocked">blocked</span>';
     }
   }
 }

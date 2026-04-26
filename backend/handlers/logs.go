@@ -6,6 +6,7 @@ package handlers
 import (
 	"fmt"
 	"multiagent-platform/internal/process"
+	"multiagent-platform/internal/security"
 	"net/http"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 // LogsHandler mengelola SSE log streaming.
 type LogsHandler struct {
 	Manager        *process.Manager
+	Security       *security.Manager
 	FrontendOrigin string // Dikonfigurasi dari FRONTEND_ORIGIN env — jangan pakai "*"
 }
 
@@ -29,7 +31,7 @@ func (h *LogsHandler) StreamLogs(w http.ResponseWriter, r *http.Request) {
 	agentID := parts[2]
 
 	logCh, ok := h.Manager.GetLogChannel(agentID)
-	
+
 	// Setup SSE headers first so we don't break chunked encoding
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -54,7 +56,7 @@ func (h *LogsHandler) StreamLogs(w http.ResponseWriter, r *http.Request) {
 		// Tahan koneksi selama 10 detik lalu biarkan browser me-reconnect otomatis perlahan.
 		fmt.Fprintf(w, "data: [%s][SYS] Agent saat ini tidak aktif.\n\n", agentID)
 		flusher.Flush()
-		
+
 		select {
 		case <-r.Context().Done():
 			return
@@ -86,6 +88,10 @@ func (h *LogsHandler) StreamLogs(w http.ResponseWriter, r *http.Request) {
 				fmt.Fprintf(w, "event: close\ndata: [%s][SYS] Agent proses tidak aktif, stream berakhir.\n\n", agentID)
 				flusher.Flush()
 				return
+			}
+			if h.Security != nil {
+				masked := h.Security.Mask(line, "")
+				line = masked.Text
 			}
 			// Escape newlines dalam SSE data field
 			escaped := strings.ReplaceAll(line, "\n", "\\n")

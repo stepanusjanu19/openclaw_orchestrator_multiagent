@@ -37,6 +37,7 @@ type Manager struct {
 	agents        map[string]*AgentProcess
 	cfg           *config.Config
 	internalToken string
+	toolToken     string
 	backendURL    string
 }
 
@@ -65,7 +66,7 @@ type AgentStatus struct {
 }
 
 // NewManager membuat instance Manager untuk process node.
-func NewManager(cfg *config.Config, internalToken, backendURL string) *Manager {
+func NewManager(cfg *config.Config, internalToken, backendURL, toolToken string) *Manager {
 	if cfg.NodeBin == "" {
 		cfg.NodeBin = "node"
 	}
@@ -77,6 +78,7 @@ func NewManager(cfg *config.Config, internalToken, backendURL string) *Manager {
 		agents:        make(map[string]*AgentProcess),
 		cfg:           cfg,
 		internalToken: internalToken,
+		toolToken:     toolToken,
 		backendURL:    backendURL,
 	}
 }
@@ -130,6 +132,16 @@ func (m *Manager) Start(cfg AgentConfig) error {
 		"TELEGRAM_BOT_TOKEN="+cfg.TelegramBotToken,
 		"OPENCLAW_GW_URL="+cfg.GatewayURL,
 		"OPENCLAW_GW_TOKEN="+cfg.GatewayToken,
+		fmt.Sprintf("AI_ROUTER_ENABLED=%t", m.cfg.AIRouterEnabled),
+		"AI_ROUTER_PROVIDER="+m.cfg.AIRouterProvider,
+		"AI_ROUTER_BASE_URL="+m.cfg.AIRouterBaseURL,
+		"AI_ROUTER_TOKEN="+m.cfg.AIRouterToken,
+		fmt.Sprintf("AI_ROUTER_REQUIRE_LOOPBACK=%t", m.cfg.AIRouterRequireLoopback),
+		fmt.Sprintf("AI_ROUTER_ALLOW_CLOUD=%t", m.cfg.AIRouterAllowCloud),
+		"AI_ROUTER_MODEL_ALLOWLIST="+m.cfg.AIRouterModelAllowlist,
+		fmt.Sprintf("AI_ROUTER_TIMEOUT_MS=%d", m.cfg.AIRouterTimeoutMS),
+		fmt.Sprintf("AI_ROUTER_MAX_RESPONSE_BYTES=%d", m.cfg.AIRouterMaxResponseBytes),
+		fmt.Sprintf("AI_ROUTER_ALLOW_TOOL_CALLS=%t", m.cfg.AIRouterAllowToolCalls),
 		"OPENCLAW_MODEL="+cfg.OpenClawModel,
 		"AGENT_ID="+cfg.ID,
 		"SOUL_MD_PATH="+cfg.SoulMDPath,
@@ -155,6 +167,11 @@ func (m *Manager) Start(cfg AgentConfig) error {
 		"NTBA_FIX_319=1",
 		"NTBA_FIX_350=1",
 	)
+	if m.cfg.AgentToolsEnabled && m.toolToken != "" {
+		env = append(env, "AGENT_TOOLS_ENABLED=true", "OPENCLAW_TOOL_TOKEN="+m.toolToken)
+	} else {
+		env = append(env, "AGENT_TOOLS_ENABLED=false")
+	}
 
 	cmd := exec.Command(m.cfg.NodeBin, entryPoint)
 	cmd.Env = env

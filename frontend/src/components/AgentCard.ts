@@ -7,11 +7,10 @@ import { PersonaEditor } from './PersonaEditor.js';
 import { showToast } from './Toast.js';
 import { escapeHTML } from '../utils/dom.js';
 
-// Emoji avatar per agent ID
 const AGENT_AVATARS: Record<string, string> = {
-  main: '🤖', dev: '👨‍💻', alpha: '⚡',
+  main: 'M', dev: 'D', alpha: 'A',
 };
-function getAvatar(id: string) { return AGENT_AVATARS[id] ?? '🦾'; }
+function getAvatar(id: string) { return AGENT_AVATARS[id] ?? id.slice(0, 2).toUpperCase(); }
 
 export class AgentCard {
   private el: HTMLDivElement;
@@ -81,7 +80,7 @@ export class AgentCard {
     if (!info.has_token) {
       warningEl = document.createElement('div');
       warningEl.className = 'no-token-banner';
-      warningEl.textContent = '⚠️ Token Telegram belum dikonfigurasi — edit ';
+      warningEl.textContent = 'Token Telegram belum dikonfigurasi - edit ';
       const code = document.createElement('code');
       code.textContent = `credentials/agents/${info.id}.env`;
       warningEl.appendChild(code);
@@ -116,25 +115,25 @@ export class AgentCard {
 
     this.startBtn = document.createElement('button');
     this.startBtn.className = 'btn btn-success btn-sm';
-    this.startBtn.innerHTML = '▶ Start';
+    this.startBtn.textContent = 'Start';
     this.startBtn.id = `btn-start-${info.id}`;
     this.startBtn.addEventListener('click', () => this.handleStart());
 
     this.stopBtn = document.createElement('button');
     this.stopBtn.className = 'btn btn-danger btn-sm';
-    this.stopBtn.innerHTML = '■ Stop';
+    this.stopBtn.textContent = 'Stop';
     this.stopBtn.id = `btn-stop-${info.id}`;
     this.stopBtn.addEventListener('click', () => this.handleStop());
 
     const editBtn = document.createElement('button');
     editBtn.className = 'btn btn-ghost btn-sm';
-    editBtn.innerHTML = '✏ Persona';
+    editBtn.textContent = 'Persona';
     editBtn.id = `btn-persona-${info.id}`;
     editBtn.addEventListener('click', () => this.openPersonaEditor());
 
     const logBtn = document.createElement('button');
     logBtn.className = 'btn btn-ghost btn-sm';
-    logBtn.innerHTML = '📋 Logs';
+    logBtn.textContent = 'Logs';
     logBtn.id = `btn-logs-${info.id}`;
     logBtn.addEventListener('click', () => this.toggleLogs(logBtn));
 
@@ -162,10 +161,10 @@ export class AgentCard {
 
   private async handleStart() {
     if (this.busy) return;
-    this.setBusy(true, this.startBtn, '▶ Starting...');
+    this.setBusy(true, this.startBtn, 'Starting...');
     try {
       await api.startAgent(this.info.id);
-      showToast(`✅ Agent "${this.info.label}" berhasil distart`, 'success');
+      showToast(`Agent "${this.info.label}" berhasil distart`, 'success');
       // Auto-show logs on start
       if (!this.logVisible) {
         this.logVisible = true;
@@ -177,23 +176,23 @@ export class AgentCard {
       const msg = err instanceof Error ? err.message : String(err);
       showToast(`Gagal start agent: ${msg}`, 'error');
     } finally {
-      this.setBusy(false, this.startBtn, '▶ Start');
+      this.setBusy(false, this.startBtn, 'Start');
     }
   }
 
   private async handleStop() {
     if (this.busy) return;
-    this.setBusy(true, this.stopBtn, '■ Stopping...');
+    this.setBusy(true, this.stopBtn, 'Stopping...');
     try {
       await api.stopAgent(this.info.id);
-      showToast(`🛑 Agent "${this.info.label}" dihentikan`, 'info');
+      showToast(`Agent "${this.info.label}" dihentikan`, 'info');
       this.logViewer.disconnect();
       await this.refreshFromServer();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       showToast(`Gagal stop agent: ${msg}`, 'error');
     } finally {
-      this.setBusy(false, this.stopBtn, '■ Stop');
+      this.setBusy(false, this.stopBtn, 'Stop');
     }
   }
 
@@ -205,7 +204,7 @@ export class AgentCard {
   private toggleLogs(btn: HTMLButtonElement) {
     this.logVisible = !this.logVisible;
     this.logContainer.style.display = this.logVisible ? 'block' : 'none';
-    btn.innerHTML = this.logVisible ? '📋 Hide Logs' : '📋 Logs';
+    btn.textContent = this.logVisible ? 'Hide Logs' : 'Logs';
 
     if (this.logVisible && this.info.status.running) {
       this.logViewer.connect(API_BASE);
@@ -261,7 +260,7 @@ export class AgentCard {
       btn.innerHTML = `<span class="loading-spinner"></span> ${label}`;
       btn.disabled = true;
     } else {
-      btn.innerHTML = label;
+      btn.textContent = label;
       this.refreshButtons();
     }
   }

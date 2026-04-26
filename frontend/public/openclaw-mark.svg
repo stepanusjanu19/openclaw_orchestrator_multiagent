@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">OpenClaw</title>
+  <desc id="desc">OpenClaw dashboard mark</desc>
+  <defs>
+    <linearGradient id="oc-bg" x1="10" y1="8" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#14b8a6"/>
+      <stop offset="1" stop-color="#34d399"/>
+    </linearGradient>
+    <linearGradient id="oc-cut" x1="18" y1="16" x2="46" y2="50" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ecfdf5"/>
+      <stop offset="1" stop-color="#ccfbf1"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#051414"/>
+  <path fill="url(#oc-bg)" d="M32 6c14.36 0 26 11.64 26 26S46.36 58 32 58 6 46.36 6 32 17.64 6 32 6Zm0 8c-9.94 0-18 8.06-18 18s8.06 18 18 18c4.22 0 8.1-1.45 11.17-3.88l-5.79-5.78A9.93 9.93 0 0 1 32 42c-5.52 0-10-4.48-10-10s4.48-10 10-10c2.08 0 4.01.64 5.61 1.73l5.72-5.72A17.92 17.92 0 0 0 32 14Z"/>
+  <path fill="url(#oc-cut)" d="M43.7 20.3a3.5 3.5 0 0 1 4.95 4.95l-6.36 6.36 6.36 6.36a3.5 3.5 0 0 1-4.95 4.95l-8.84-8.84a3.5 3.5 0 0 1 0-4.95l8.84-8.84Z"/>
+  <circle cx="32" cy="32" r="5" fill="#ecfdf5"/>
+</svg>

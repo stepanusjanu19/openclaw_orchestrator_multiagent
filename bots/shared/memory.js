@@ -27,10 +27,18 @@ let pool = null;
 let memoryRuntimeEnabled = MEMORY_ENABLED;
 let memoryDisabledReason = "";
 
+function redactSecrets(value) {
+  return String(value || "")
+    .replace(/\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/g, "[REDACTED_TELEGRAM_TOKEN]")
+    .replace(/\b(?:sk|pk|xox[baprs]|ghp|gho|AIza)[A-Za-z0-9_\-]{16,}\b/g, "[REDACTED_API_KEY]")
+    .replace(/(postgres(?:ql)?:\/\/[^:\s/]+:)([^@\s]+)(@)/gi, "$1[REDACTED]$3")
+    .replace(/(authorization|api[_-]?key|access[_-]?token|auth[_-]?token|gateway[_-]?token|password|secret)(["'\s:=]+)([^"',\s}]+)/gi, "$1$2[REDACTED]");
+}
+
 function disableMemory(reason, agentId) {
   if (!memoryDisabledReason) {
-    memoryDisabledReason = reason;
-    console.warn(`[${agentId}][MEMORY] Disabled after non-fatal error: ${reason}`);
+    memoryDisabledReason = redactSecrets(reason);
+    console.warn(`[${agentId}][MEMORY] Disabled after non-fatal error: ${memoryDisabledReason}`);
   }
   memoryRuntimeEnabled = false;
 }
@@ -49,7 +57,7 @@ function getPool() {
   if (!pool) {
     pool = new Pool({ connectionString: PGVECTOR_URL });
     pool.on("error", (err) => {
-      console.error("[MEMORY] PG Pool error:", err.message);
+      console.error("[MEMORY] PG Pool error:", redactSecrets(err.message));
     });
   }
   return pool;
@@ -110,11 +118,11 @@ export async function saveMemory(agentId, userId, content) {
     console.log(`[${agentId}][MEMORY] Saved memory for user ${userId}`);
   } catch (err) {
     if (shouldDisableMemory(err)) {
-      disableMemory(err.message, agentId);
+      disableMemory(redactSecrets(err.message), agentId);
       return;
     }
     // Non-fatal: jika PG mati, agen tetap merespons (degradasi halus)
-    console.warn(`[${agentId}][MEMORY] saveMemory failed (non-fatal): ${err.message}`);
+    console.warn(`[${agentId}][MEMORY] saveMemory failed (non-fatal): ${redactSecrets(err.message)}`);
   }
 }
 
@@ -147,10 +155,10 @@ export async function searchMemory(agentId, userId, queryText) {
     }
   } catch (err) {
     if (shouldDisableMemory(err)) {
-      disableMemory(err.message, agentId);
+      disableMemory(redactSecrets(err.message), agentId);
       return [];
     }
-    console.warn(`[${agentId}][MEMORY] searchMemory failed (non-fatal): ${err.message}`);
+    console.warn(`[${agentId}][MEMORY] searchMemory failed (non-fatal): ${redactSecrets(err.message)}`);
     return [];
   }
 }
@@ -170,7 +178,7 @@ export async function forgetUser(agentId, userId) {
       client.release();
     }
   } catch (err) {
-    console.warn(`[${agentId}][MEMORY] forgetUser failed: ${err.message}`);
+    console.warn(`[${agentId}][MEMORY] forgetUser failed: ${redactSecrets(err.message)}`);
     return 0;
   }
 }

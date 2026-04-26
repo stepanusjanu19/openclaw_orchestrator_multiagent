@@ -11,6 +11,8 @@ import (
 	"multiagent-platform/internal/config"
 	"multiagent-platform/internal/openclaw"
 	"multiagent-platform/internal/process"
+	"multiagent-platform/internal/security"
+	"multiagent-platform/internal/visitor"
 	"net/http"
 	"os"
 	"os/exec"
@@ -30,7 +32,9 @@ type App struct {
 		Lock()
 		Unlock()
 	}
-	Manager *process.Manager
+	Manager  *process.Manager
+	Security *security.Manager
+	Visitors *visitor.Store
 }
 
 // AgentInfo adalah info lengkap satu agent untuk response API.

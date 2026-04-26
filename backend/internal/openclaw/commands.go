@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -58,6 +59,13 @@ type commandSpec struct {
 }
 
 var safeToken = regexp.MustCompile(`^[A-Za-z0-9._:@/+=,-]{1,200}$`)
+var sensitiveConfigKey = regexp.MustCompile(`(?i)(token|api[_-]?key|apikey|password|passwd|secret|credential|authorization|auth[_-]?header|private[_-]?key|env|database[_-]?url|pgvector|dsn)`)
+
+var commandKeyValueSecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|STORE_KEY|DATABASE_URL|DSN)[A-Z0-9_]*)(["'\s:=]+)([^"',\s}]+)`),
+	regexp.MustCompile(`(?i)\b(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|jwt[_-]?secret|password|secret)(["'\s:=]+)([^"',\s}]+)`),
+}
+var commandRawSecretPattern = regexp.MustCompile(`\b(sk-ant-[A-Za-z0-9_\-]{16,}|sk-[A-Za-z0-9_\-]{20,}|sk-or-[A-Za-z0-9_\-]{16,}|AIza[A-Za-z0-9_\-]{16,}|ghp_[A-Za-z0-9_]{20,})\b`)
 
 func GetCommandDefinitions() []CommandDefinition {
 	specs := commandSpecs()
@@ -105,6 +113,7 @@ func RunCommand(ctx context.Context, req CommandRunRequest) (CommandRunResult, e
 	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
+	cmd.Env = safeCommandEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if runCtx.Err() == context.DeadlineExceeded {
@@ -119,13 +128,50 @@ func RunCommand(ctx context.Context, req CommandRunRequest) (CommandRunResult, e
 		} else {
 			result.ExitCode = 1
 		}
-		result.Stderr = strings.TrimSpace(string(out))
+		result.Stderr = RedactCommandOutput(strings.TrimSpace(string(out)))
 		result.Error = err.Error()
 		return result, nil
 	}
-	result.Stdout = strings.TrimSpace(string(out))
+	result.Stdout = RedactCommandOutput(strings.TrimSpace(string(out)))
 	result.ExitCode = 0
 	return result, nil
+}
+
+func RedactCommandOutput(text string) string {
+	out := strings.ReplaceAll(text, "\r", " ")
+	out = strings.ReplaceAll(out, "\x00", "")
+	for _, re := range commandKeyValueSecretPatterns {
+		out = re.ReplaceAllString(out, "$1$2[REDACTED]")
+	}
+	out = commandRawSecretPattern.ReplaceAllString(out, "[REDACTED]")
+	if len(out) > 12000 {
+		return out[:12000] + "...[truncated]"
+	}
+	return out
+}
+
+func safeCommandEnv() []string {
+	allowed := []string{
+		"PATH",
+		"HOME",
+		"USER",
+		"LOGNAME",
+		"SHELL",
+		"TMPDIR",
+		"TEMP",
+		"TMP",
+		"XDG_CACHE_HOME",
+		"XDG_CONFIG_HOME",
+		"XDG_DATA_HOME",
+		"OPENCLAW_HOME",
+	}
+	env := make([]string, 0, len(allowed))
+	for _, key := range allowed {
+		if value, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+value)
+		}
+	}
+	return env
 }
 
 func commandSpecs() map[string]commandSpec {
@@ -158,7 +204,6 @@ func commandSpecs() map[string]commandSpec {
 		{"doctor", "diagnostics", "Run OpenClaw diagnostics.", []string{"doctor"}},
 		{"version", "diagnostics", "Show OpenClaw version.", []string{"--version"}},
 		{"help", "diagnostics", "Show OpenClaw help.", []string{"--help"}},
-		{"config_show", "config", "Show resolved configuration.", []string{"config", "show"}},
 		{"config_validate", "config", "Validate OpenClaw config.", []string{"config", "validate"}},
 		{"config_schema", "config", "Print config schema.", []string{"config", "schema"}},
 		{"channels_list", "channels", "List configured channels.", []string{"channels", "list"}},
@@ -189,7 +234,7 @@ func commandSpecs() map[string]commandSpec {
 	providerArg := []CommandArg{{Name: "provider", Label: "Provider", Required: true, Placeholder: "openrouter"}}
 
 	add("config_get", "config", CommandSafetyReadOnly, configDocs, "Get a config value.", []string{"config", "get"}, keyArg, func(args map[string]string) ([]string, error) {
-		return argvWithRequired([]string{"openclaw", "config", "get"}, args, "key")
+		return argvWithSafeConfigKey([]string{"openclaw", "config", "get"}, args, "key")
 	})
 	add("models_info", "models", CommandSafetyReadOnly, modelsDocs, "Show model details.", []string{"models", "info"}, modelArg, func(args map[string]string) ([]string, error) {
 		return argvWithRequired([]string{"openclaw", "models", "info"}, args, "model")
@@ -197,9 +242,8 @@ func commandSpecs() map[string]commandSpec {
 	add("agents_info", "agents", CommandSafetyReadOnly, agentsDocs, "Show agent details.", []string{"agents", "info"}, agentArg, func(args map[string]string) ([]string, error) {
 		return argvWithRequired([]string{"openclaw", "agents", "info"}, args, "agent")
 	})
-	add("secrets_get", "secrets", CommandSafetyReadOnly, docs, "Show secret metadata.", []string{"secrets", "get"}, keyArg, func(args map[string]string) ([]string, error) {
-		return argvWithRequired([]string{"openclaw", "secrets", "get"}, args, "key")
-	})
+	add("config_show", "config", CommandSafetyBlocked, configDocs, "Resolved config output may include secrets; use config get for non-sensitive keys.", []string{"config", "show"}, nil, nil)
+	add("secrets_get", "secrets", CommandSafetyBlocked, docs, "Secret value reads are blocked in dashboard runner.", []string{"secrets", "get"}, keyArg, nil)
 
 	add("config_set", "config", CommandSafetyMutating, configDocs, "Set a config value.", []string{"config", "set"}, valueArg, func(args map[string]string) ([]string, error) {
 		return argvWithRequired([]string{"openclaw", "config", "set"}, args, "key", "value")
@@ -316,4 +360,12 @@ func argvWithRequired(prefix []string, args map[string]string, required ...strin
 		argv = append(argv, value)
 	}
 	return argv, nil
+}
+
+func argvWithSafeConfigKey(prefix []string, args map[string]string, key string) ([]string, error) {
+	value := strings.TrimSpace(args[key])
+	if sensitiveConfigKey.MatchString(value) {
+		return nil, fmt.Errorf("sensitive_config_key_blocked")
+	}
+	return argvWithRequired(prefix, args, key)
 }

@@ -1,4 +1,5 @@
 import { defineConfig, loadEnv } from 'vite'
+import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig(({ mode }) => {
   // Parsing file ../credentials/.env secara native
@@ -20,6 +21,7 @@ export default defineConfig(({ mode }) => {
   const apiUrl = `http://${apiHost}:${apiPort}`
 
   return {
+    plugins: [tailwindcss()],
     server: {
       port,
       host,

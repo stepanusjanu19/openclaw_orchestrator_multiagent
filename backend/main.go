@@ -20,7 +20,10 @@ import (
 	"multiagent-platform/internal/auth"
 	"multiagent-platform/internal/config"
 	"multiagent-platform/internal/gateway"
+	"multiagent-platform/internal/netmeta"
 	"multiagent-platform/internal/process"
+	"multiagent-platform/internal/security"
+	visitorstore "multiagent-platform/internal/visitor"
 )
 
 // agentRegistry adalah shared mutable state dengan RWMutex.
@@ -90,6 +93,11 @@ func main() {
 		log.Fatalf("❌ Gagal generate internal RPC token: %v", err)
 	}
 	internalRPCToken := hex.EncodeToString(tokenBytes)
+	toolTokenBytes := make([]byte, 32)
+	if _, err := rand.Read(toolTokenBytes); err != nil {
+		log.Fatalf("❌ Gagal generate internal tool token: %v", err)
+	}
+	internalToolToken := hex.EncodeToString(toolTokenBytes)
 
 	registry := &agentRegistry{creds: initialCreds}
 
@@ -109,12 +117,24 @@ func main() {
 
 	sessions := auth.NewSessionStore(cfg.DashboardPassword)
 	backendURL := fmt.Sprintf("http://%s:%s", cfg.APIHost, cfg.APIPort)
-	mgr := process.NewManager(cfg, internalRPCToken, backendURL)
+	mgr := process.NewManager(cfg, internalRPCToken, backendURL, internalToolToken)
+	securityMgr, err := security.NewManager(cfg)
+	if err != nil {
+		log.Fatalf("❌ Gagal init security manager: %v", err)
+	}
+	visitorStore := visitorstore.NewStore(cfg)
+	if visitorStore.Enabled() {
+		log.Printf("✅ Visitor PostgreSQL store enabled")
+	} else {
+		log.Printf("ℹ️  Visitor PostgreSQL store disabled/unavailable; gateway audit metadata still works")
+	}
 
 	appState := &handlers.App{
 		Cfg:              cfg,
 		Manager:          mgr,
 		InternalRPCToken: internalRPCToken,
+		Security:         securityMgr,
+		Visitors:         visitorStore,
 	}
 
 	// ── Init Handlers ─────────────────────────────────────────────────────────
@@ -122,6 +142,7 @@ func main() {
 		Sessions:      sessions,
 		InternalToken: internalRPCToken,
 		OCDir:         cfg.OpenClawWorkspaceDir,
+		Cfg:           cfg,
 	}
 
 	agentsH := &handlers.AgentsHandler{
@@ -130,7 +151,7 @@ func main() {
 		CredsSetter: registry.set,
 	}
 
-	logsH := &handlers.LogsHandler{Manager: mgr, FrontendOrigin: cfg.FrontendOrigin}
+	logsH := &handlers.LogsHandler{Manager: mgr, Security: securityMgr, FrontendOrigin: cfg.FrontendOrigin}
 
 	personasH := &handlers.PersonasHandler{App: appState}
 	workspaceH := &handlers.WorkspaceHandler{App: appState}
@@ -139,15 +160,19 @@ func main() {
 		GatewayURL:    cfg.GatewayURL,
 		GatewayToken:  cfg.GatewayToken,
 		WorkspaceDir:  cfg.OpenClawWorkspaceDir,
+		Security:      securityMgr,
 		KnownAgentIDs: registry.ids,
 	}
+	routerStatusH := &handlers.RouterStatusHandler{App: appState}
 
-	gwManager := gateway.NewManager(*credDir, cfg.GatewayURL)
+	gwManager := gateway.NewManager(*credDir, cfg.GatewayURL, securityMgr)
 	gatewayH := &handlers.GatewayHandler{
 		App:       appState,
 		GwManager: gwManager,
 		PublicURL: backendURL,
 	}
+	securityH := &handlers.SecurityHandler{App: appState}
+	visitorsH := &handlers.VisitorsHandler{App: appState}
 
 	// ── New: Daemon control + Orchestrator ─────────────────────────────────────
 	daemonCtrlH := &handlers.OpenClawCtrlHandler{App: appState}
@@ -162,6 +187,7 @@ func main() {
 
 	// ── Public routes ──────────────────────────────────────────────────────────
 	mux.HandleFunc("/api/health", handlers.Health)
+	mux.HandleFunc("/api/system/metrics", handlers.SystemMetricsHandler)
 	mux.HandleFunc("/api/auth/login", authH.Login)
 	mux.HandleFunc("/api/auth/logout", authH.Logout)
 	mux.HandleFunc("/api/auth/me", authH.Me)
@@ -169,6 +195,80 @@ func main() {
 	hardenH := &handlers.SystemHardenHandler{App: appState}
 	mux.HandleFunc("/api/system/harden/preview", hardenH.HardenPreviewHandler)
 	mux.HandleFunc("/api/system/harden/execute", hardenH.HardenExecuteHandler)
+
+	// ── Security enhancement routes ──────────────────────────────────────────
+	mux.HandleFunc("/api/security/policy", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			securityH.GetPolicy(w, r)
+		case http.MethodPut:
+			securityH.UpdatePolicy(w, r)
+		default:
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/api/security/masking/rulesets", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			securityH.GetRules(w, r)
+		case http.MethodPut:
+			securityH.UpdateRules(w, r)
+		default:
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/api/security/audit-logs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			securityH.QueryAuditLogs(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+	mux.HandleFunc("/api/security/templates/validate", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			securityH.ValidateTemplate(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+	mux.HandleFunc("/api/security/templates/render", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			securityH.RenderTemplate(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+	mux.HandleFunc("/api/security/templates/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			securityH.DeleteTemplate(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+	mux.HandleFunc("/api/security/templates", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			securityH.ListTemplates(w, r)
+		case http.MethodPost, http.MethodPut:
+			securityH.SaveTemplate(w, r)
+		default:
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/api/security/internal/mask", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			securityH.InternalMask(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+	mux.HandleFunc("/api/security/internal/audit", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			securityH.InternalAudit(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
 
 	// ── Agent routes ──────────────────────────────────────────────────────────
 	// GET /api/agents/models — harus didahulukan sebelum /api/agents/ wildcard
@@ -208,6 +308,7 @@ func main() {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		}
 	})
+	mux.HandleFunc("/api/visitors", visitorsH.Query)
 
 	mux.HandleFunc("/api/agents/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -270,6 +371,14 @@ func main() {
 	})
 
 	// ── OpenClaw routes ───────────────────────────────────────────────────────
+	mux.HandleFunc("/api/router/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			routerStatusH.GetStatus(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
 	mux.HandleFunc("/api/openclaw/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			ocH.GetStatus(w, r)
@@ -372,12 +481,31 @@ func main() {
 	mux.HandleFunc("/api/code-tools/stop", func(w http.ResponseWriter, r *http.Request) {
 		codeToolsH.Stop(w, r)
 	})
+	mux.HandleFunc("/api/code-tools/stop-unmanaged", func(w http.ResponseWriter, r *http.Request) {
+		codeToolsH.StopUnmanaged(w, r)
+	})
 	mux.HandleFunc("/api/code-tools/logs/", func(w http.ResponseWriter, r *http.Request) {
 		codeToolsH.StreamLogs(w, r)
 	})
 
 	// ── UserBot / BotFather routes ─────────────────────────────────────────────
 	userBotH := &handlers.UserBotHandler{App: appState}
+	internalToolsH := &handlers.InternalToolsHandler{App: appState, Agents: agentsH, ToolToken: internalToolToken, ToolsEnabled: cfg.AgentToolsEnabled}
+
+	mux.HandleFunc("/api/security/internal/tools/create-telegram-bot", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			internalToolsH.CreateTelegramBot(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+	mux.HandleFunc("/api/security/internal/tools/deploy-sub-agent", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			internalToolsH.DeploySubAgent(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
 
 	// ── Provider Config routes ─────────────────────────────────────────────────
 	providerCfgH := &handlers.ProviderConfigHandler{App: appState}
@@ -545,7 +673,7 @@ func main() {
 	// maxBytes = 2MB (2 * 1024 * 1024)
 	var handler http.Handler = loggingMiddleware(mux)
 	handler = handlers.AuthMiddleware(sessions, internalRPCToken, handler)
-	handler = rateLimitMiddleware(handler)
+	handler = rateLimitMiddleware(cfg, handler)
 	handler = owaspMiddleware(handler)
 	handler = corsMiddleware([]string{cfg.FrontendOrigin, backendURL}, handler)
 	handler = bodySizeLimitMiddleware(2*1024*1024, handler)
@@ -554,6 +682,9 @@ func main() {
 	addr := fmt.Sprintf("%s:%s", cfg.APIHost, cfg.APIPort)
 	log.Printf("✅ API server listening on http://%s", addr)
 	log.Printf("   Auth password : %s (set DASHBOARD_PASSWORD di credentials/.env)", maskPassword(cfg.DashboardPassword))
+	if cfg.DashboardPassword == "" || cfg.DashboardPassword == "admin" {
+		log.Printf("⚠️  SECURITY WARNING: DASHBOARD_PASSWORD masih kosong/default. Set password kuat di credentials/.env sebelum expose dashboard.")
+	}
 	log.Printf("   Frontend      : %s", cfg.FrontendOrigin)
 	log.Printf("   Gateway       : %s", cfg.GatewayURL)
 
@@ -580,11 +711,16 @@ func owaspMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* wss://localhost:* wss://127.0.0.1:*")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* wss://localhost:* wss://127.0.0.1:*; img-src 'self' data: https://*.tile.openstreetmap.org; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 
-		// Advanced OWASP Headers
-		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=(), screen-wake-lock=()")
+		// Advanced OWASP Headers. Geolocation is only enabled on the public
+		// consent page that records visitor GPS with browser permission.
+		geoPolicy := "geolocation=()"
+		if isVisitorLocationConsentRoute(r) {
+			geoPolicy = "geolocation=(self)"
+		}
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), "+geoPolicy+", payment=(), usb=(), screen-wake-lock=()")
 		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 		w.Header().Set("Pragma", "no-cache")
 		w.Header().Set("Server", "undisclosed") // Masking backend technology
@@ -596,6 +732,33 @@ func owaspMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func isVisitorLocationConsentRoute(r *http.Request) bool {
+	path := r.URL.Path
+	if !strings.HasPrefix(path, "/api/webhook/") {
+		return false
+	}
+	if strings.HasSuffix(path, "/visit") {
+		return true
+	}
+	if r.Method != http.MethodGet {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/api/webhook/"), "/")
+	return len(parts) == 3 && parts[1] == "http" && webhookPathLike(parts[2])
+}
+
+func webhookPathLike(path string) bool {
+	if len(path) < 32 || len(path) > 64 {
+		return false
+	}
+	for _, ch := range path {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // ── Rate Limiter Custom (Anti Brute-force & DDoS) ─────────────────────────
@@ -634,18 +797,9 @@ func init() {
 	}()
 }
 
-func rateLimitMiddleware(next http.Handler) http.Handler {
+func rateLimitMiddleware(cfg *config.Config, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := r.Header.Get("X-Real-IP")
-		if ip == "" {
-			ip = r.Header.Get("X-Forwarded-For")
-		}
-		if ip == "" {
-			ip = strings.Split(r.RemoteAddr, ":")[0]
-		} else {
-			ip = strings.Split(ip, ",")[0]
-			ip = strings.TrimSpace(ip)
-		}
+		ip := rateLimitClientIP(r, cfg)
 
 		mu.Lock()
 
@@ -677,20 +831,29 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 		}
 
 		if strings.HasPrefix(r.URL.Path, "/api/webhook/") {
+			traffic := netmeta.ClassifyTraffic(r, cfg)
+			limit := webhookRatePolicy(cfg, traffic)
+			if limit.block {
+				mu.Unlock()
+				w.Header().Set("Retry-After", "120")
+				http.Error(w, "429 Too Many Requests - Abuse traffic throttled", http.StatusTooManyRequests)
+				return
+			}
 			v, exists := visitors[ip]
 			if !exists {
-				visitors[ip] = &visitor{tokens: 20, last: time.Now()}
+				visitors[ip] = &visitor{tokens: limit.burst, last: time.Now()}
 				v = visitors[ip]
 			}
 			now := time.Now()
 			elapsed := now.Sub(v.last).Seconds()
-			v.tokens += int(elapsed * 2)
-			if v.tokens > 20 {
-				v.tokens = 20
+			v.tokens += int(elapsed * limit.refillPerSecond)
+			if v.tokens > limit.burst {
+				v.tokens = limit.burst
 			}
 			v.last = now
 			if v.tokens <= 0 {
 				mu.Unlock()
+				w.Header().Set("Retry-After", limit.retryAfter)
 				http.Error(w, "429 Too Many Requests - Webhook throttled", http.StatusTooManyRequests)
 				return
 			}
@@ -728,6 +891,55 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func rateLimitClientIP(r *http.Request, cfg *config.Config) string {
+	return netmeta.ClientIPString(r, cfg)
+}
+
+type webhookLimitPolicy struct {
+	burst           int
+	refillPerSecond float64
+	retryAfter      string
+	block           bool
+}
+
+func webhookRatePolicy(cfg *config.Config, traffic netmeta.TrafficAssessment) webhookLimitPolicy {
+	if cfg != nil && !cfg.GatewayAbuseDefenseEnabled {
+		return webhookLimitPolicy{burst: 20, refillPerSecond: 2, retryAfter: "30"}
+	}
+	if traffic.Score >= gatewayAbuseBlockScore(cfg) {
+		return webhookLimitPolicy{burst: 0, refillPerSecond: 0, retryAfter: "120", block: true}
+	}
+	switch traffic.Class {
+	case "human_likely":
+		return webhookLimitPolicy{burst: 20, refillPerSecond: 2, retryAfter: "30"}
+	case "automation_likely":
+		return webhookLimitPolicy{burst: 10, refillPerSecond: 1, retryAfter: "60"}
+	case "scraper_likely":
+		return webhookLimitPolicy{burst: 6, refillPerSecond: 0.5, retryAfter: "90"}
+	case "abuse_likely":
+		return webhookLimitPolicy{burst: 3, refillPerSecond: 0.2, retryAfter: "120"}
+	default:
+		if traffic.Score >= gatewayAbuseThrottleScore(cfg) {
+			return webhookLimitPolicy{burst: 10, refillPerSecond: 1, retryAfter: "60"}
+		}
+		return webhookLimitPolicy{burst: 20, refillPerSecond: 2, retryAfter: "30"}
+	}
+}
+
+func gatewayAbuseThrottleScore(cfg *config.Config) int {
+	if cfg == nil || cfg.GatewayAbuseThrottleScore <= 0 {
+		return 35
+	}
+	return cfg.GatewayAbuseThrottleScore
+}
+
+func gatewayAbuseBlockScore(cfg *config.Config) int {
+	if cfg == nil || cfg.GatewayAbuseBlockScore <= 0 {
+		return 85
+	}
+	return cfg.GatewayAbuseBlockScore
+}
+
 // ── Body Size Limiter (Anti Memory Exhaustion) ────────────────────────────
 func bodySizeLimitMiddleware(maxBytes int64, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -758,7 +970,7 @@ func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 		}
 
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token, X-OpenClaw-Timestamp, X-OpenClaw-Nonce, X-OpenClaw-Signature")
 
 		// Secure Handling of Null Origin or Invalid Origin
 		// Preflight requires explicit matching otherwise drop
@@ -773,21 +985,32 @@ func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/logs") {
-			// Hapus token dari query string sebelum dicatat ke log (prevent credential leakage)
+			// Hapus secret dari query string sebelum dicatat ke log (prevent credential leakage)
 			logPath := r.URL.Path
 			if r.URL.RawQuery != "" {
 				q := r.URL.Query()
-				if q.Get("token") != "" {
-					q.Set("token", "[REDACTED]")
-					logPath = r.URL.Path + "?" + q.Encode()
-				} else {
-					logPath = r.URL.Path + "?" + r.URL.RawQuery
+				for key := range q {
+					if isSensitiveQueryKey(key) {
+						q.Set(key, "[REDACTED]")
+					}
 				}
+				logPath = r.URL.Path + "?" + q.Encode()
 			}
 			log.Printf("→ %s %s", r.Method, logPath)
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func isSensitiveQueryKey(key string) bool {
+	k := strings.ToLower(key)
+	sensitive := []string{"token", "api_key", "apikey", "password", "secret", "access_token", "auth_token", "gateway_token"}
+	for _, part := range sensitive {
+		if strings.Contains(k, part) {
+			return true
+		}
+	}
+	return false
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

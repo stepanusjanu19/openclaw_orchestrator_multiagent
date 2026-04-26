@@ -2,14 +2,14 @@
 // List view yang scalable — semua agent dalam tabel yang bisa expand.
 // Dynamic: tambah/hapus agent langsung dari UI tanpa reload.
 
-import { api, API_BASE, type AgentInfo, type OCStatus, type DetectedAgent, type ModelGroups, type DaemonStatus, type OrchestratorStatus, type ProviderStatus } from '../api/client.js';
+import { api, API_BASE, type AgentInfo, type OCStatus, type DetectedAgent, type ModelGroups, type DaemonStatus, type OrchestratorStatus, type ProviderStatus, type SystemMetrics } from '../api/client.js';
 import { AddAgentModal } from '../components/AddAgentModal.js';
 import { LogViewer } from '../components/LogViewer.js';
 import { WorkspaceEditor } from '../components/WorkspaceEditor.js';
 import { showToast } from '../components/Toast.js';
 import { escapeHTML } from '../utils/dom.js';
 
-const AVATARS: Record<string, string> = { main: '🤖', dev: '👨‍💻', alpha: '⚡', assistant: '🎯', bot: '🤖' };
+const AVATARS: Record<string, string> = { main: 'M', dev: 'D', alpha: 'A', assistant: 'AI', bot: 'B' };
 const avatar = (id: string) => AVATARS[id] ?? id.charAt(0).toUpperCase();
 
 export class Dashboard {
@@ -17,13 +17,19 @@ export class Dashboard {
   private agents: AgentInfo[] = [];
   private ocStatus: OCStatus | null = null;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
+  private metricsTimer: ReturnType<typeof setInterval> | null = null;
   private expandedRows = new Set<string>();
   private logViewers = new Map<string, LogViewer>();
   private busyAgents = new Set<string>();
+  private metrics: SystemMetrics | null = null;
+  private metricsHistory: SystemMetrics[] = [];
+  private metricsState: 'loading' | 'connected' | 'route-missing' | 'auth-expired' | 'unavailable' = 'loading';
+  private metricsMessage = 'Menghubungkan telemetry backend...';
 
   // DOM refs
   private agentListEl!: HTMLDivElement;
   private summaryEl!: HTMLDivElement;
+  private metricsEl!: HTMLDivElement;
   private ocPanelEl!: HTMLDivElement;
   private providersPanelEl!: HTMLDivElement;
   private providers: ProviderStatus[] = [];
@@ -37,12 +43,14 @@ export class Dashboard {
   getElement() { return this.el; }
 
   async mount() {
-    await Promise.all([this.loadAgents(), this.loadOCStatus(), this.loadProviders()]);
+    await Promise.all([this.loadAgents(), this.loadOCStatus(), this.loadProviders(), this.loadSystemMetrics()]);
     this.refreshTimer = setInterval(() => this.silentRefresh(), 8000);
+    this.metricsTimer = setInterval(() => this.loadSystemMetrics(), 5000);
   }
 
   unmount() {
     if (this.refreshTimer) clearInterval(this.refreshTimer);
+    if (this.metricsTimer) clearInterval(this.metricsTimer);
     this.logViewers.forEach(lv => lv.disconnect());
   }
 
@@ -52,20 +60,23 @@ export class Dashboard {
     const header = document.createElement('div');
     header.className = 'page-header';
     header.innerHTML = `
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+      <div class="page-header-row">
         <div>
+          <span class="page-eyebrow">Control overview</span>
           <h1>Agent Dashboard</h1>
           <p class="subtitle">Kelola semua agent OpenClaw Telegram — tambah, start, edit persona secara real-time</p>
         </div>
-        <button class="btn btn-primary" id="btn-add-agent" style="flex-shrink:0">
-          ➕ Tambah Agent
-        </button>
+        <button class="btn btn-primary page-primary-action" id="btn-add-agent">Tambah Agent</button>
       </div>
     `;
     header.querySelector('#btn-add-agent')!.addEventListener('click', () => this.openAddModal());
 
     const body = document.createElement('div');
     body.className = 'page-body';
+
+    this.metricsEl = document.createElement('div');
+    this.metricsEl.className = 'device-monitor-panel';
+    this.renderDeviceMonitor();
 
     // Summary strip
     this.summaryEl = document.createElement('div');
@@ -79,16 +90,15 @@ export class Dashboard {
     // Providers Panel
     this.providersPanelEl = document.createElement('div');
     this.providersPanelEl.className = 'providers-panel';
-    this.providersPanelEl.style.marginTop = '24px';
 
     // Agent list
     const listSection = document.createElement('div');
-    listSection.style.marginTop = '24px';
+    listSection.className = 'dashboard-section';
 
     const listHeader = document.createElement('div');
     listHeader.className = 'list-header';
     listHeader.innerHTML = `
-      <h4 style="margin:0">Agents</h4>
+      <h4>Agents</h4>
       <button class="btn btn-ghost btn-sm" id="btn-refresh-agents">↻ Refresh</button>
     `;
     listHeader.querySelector('#btn-refresh-agents')!.addEventListener('click', () => this.loadAgents());
@@ -98,7 +108,7 @@ export class Dashboard {
     this.agentListEl.innerHTML = this.skeletonHTML();
 
     listSection.append(listHeader, this.agentListEl);
-    body.append(this.summaryEl, this.ocPanelEl, this.providersPanelEl, listSection);
+    body.append(this.metricsEl, this.summaryEl, this.ocPanelEl, this.providersPanelEl, listSection);
     this.el.append(header, body);
   }
 
@@ -153,6 +163,114 @@ export class Dashboard {
     } catch {}
   }
 
+  private async loadSystemMetrics() {
+    if (!this.metrics) {
+      this.metricsState = 'loading';
+      this.renderDeviceMonitor();
+    }
+    try {
+      this.metrics = await api.getSystemMetrics();
+      this.metricsState = 'connected';
+      this.metricsMessage = 'Realtime host telemetry untuk backend, memory, disk, dan runtime Go.';
+      this.metricsHistory.push(this.metrics);
+      if (this.metricsHistory.length > 24) this.metricsHistory.shift();
+      this.renderDeviceMonitor();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg === 'UNAUTHORIZED') {
+        this.metricsState = 'auth-expired';
+        this.metricsMessage = 'Session dashboard sudah expired. Login ulang untuk melihat telemetry.';
+      } else if (msg.includes('HTTP 404')) {
+        this.metricsState = 'route-missing';
+        this.metricsMessage = 'Route /api/system/metrics belum aktif. Restart backend agar route baru terdaftar.';
+      } else {
+        this.metricsState = 'unavailable';
+        this.metricsMessage = 'Realtime host telemetry tidak tersedia.';
+      }
+      this.renderDeviceMonitor();
+    }
+  }
+
+  private renderDeviceMonitor() {
+    if (!this.metricsEl) return;
+    if (this.metricsState !== 'connected' || !this.metrics) {
+      const statusLabel = this.metricsState === 'loading'
+        ? 'Loading'
+        : this.metricsState === 'route-missing'
+          ? 'Backend route missing'
+          : this.metricsState === 'auth-expired'
+            ? 'Auth expired'
+            : 'Unavailable';
+      this.metricsEl.innerHTML = `
+        <div class="device-monitor-header">
+          <div>
+            <h3>Device Monitor</h3>
+            <p>${escapeHTML(this.metricsMessage)}</p>
+          </div>
+          <span class="device-monitor-status ${this.metricsState}">${escapeHTML(statusLabel)}</span>
+        </div>
+      `;
+      return;
+    }
+    const m = this.metrics;
+    const cpu = m?.cpu_percent ?? 0;
+    const memory = m?.memory_percent ?? 0;
+    const disk = m?.disk_percent ?? 0;
+    const spark = this.renderSparkline(this.metricsHistory.map(item => item.cpu_percent));
+    const ts = m?.timestamp ? new Date(m.timestamp).toLocaleTimeString() : 'waiting';
+    this.metricsEl.innerHTML = `
+      <div class="device-monitor-header">
+        <div>
+          <h3>Device Monitor</h3>
+          <p>${escapeHTML(this.metricsMessage)}</p>
+        </div>
+        <span class="device-monitor-time">Connected · ${escapeHTML(ts)}</span>
+      </div>
+      <div class="device-monitor-grid">
+        ${this.metricCard('CPU Load', cpu, `${m?.load_1?.toFixed(2) ?? '0.00'} / ${m?.num_cpu ?? 0} cores`, 'cpu')}
+        ${this.metricCard('Memory', memory, `${m?.memory_used_mb ?? 0} / ${m?.memory_total_mb ?? 0} MB`, 'memory')}
+        ${this.metricCard('Disk', disk, `${m?.disk_used_gb ?? 0} / ${m?.disk_total_gb ?? 0} GB`, 'disk')}
+        <div class="device-card runtime">
+          <div>
+            <span class="device-label">Go Runtime</span>
+            <strong>${m?.go_heap_alloc_mb ?? 0} MB</strong>
+            <small>${m?.go_goroutines ?? 0} goroutines</small>
+          </div>
+          <div class="device-sparkline">${spark}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  private metricCard(label: string, value: number, sub: string, kind: string) {
+    const pct = Math.max(0, Math.min(100, value || 0));
+    return `
+      <div class="device-card ${kind}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+          <div>
+            <span class="device-label">${label}</span>
+            <strong>${pct.toFixed(1)}%</strong>
+            <small>${escapeHTML(sub)}</small>
+          </div>
+          <div class="device-ring" style="--pct:${pct};">${Math.round(pct)}</div>
+        </div>
+        <div class="device-bar"><span style="width:${pct}%"></span></div>
+      </div>
+    `;
+  }
+
+  private renderSparkline(values: number[]) {
+    if (values.length === 0) return '';
+    const width = 140;
+    const height = 42;
+    const points = values.map((v, i) => {
+      const x = values.length === 1 ? width : (i / (values.length - 1)) * width;
+      const y = height - (Math.max(0, Math.min(100, v)) / 100) * height;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${points}" /></svg>`;
+  }
+
   // ── Summary ───────────────────────────────────────────────────────────────
 
   private renderSummary() {
@@ -164,7 +282,7 @@ export class Dashboard {
     this.summaryEl.innerHTML = `
       <div class="summary-card"><span class="sc-label">Total Agents</span><span class="sc-value purple">${total}</span><span class="sc-sub">registered</span></div>
       <div class="summary-card"><span class="sc-label">Running</span><span class="sc-value green">${running}</span><span class="sc-sub">active bots</span></div>
-      <div class="summary-card"><span class="sc-label">Stopped</span><span class="sc-value cyan">${stopped}</span><span class="sc-sub">idle</span></div>
+      <div class="summary-card"><span class="sc-label">Stopped</span><span class="sc-value teal">${stopped}</span><span class="sc-sub">idle</span></div>
       <div class="summary-card"><span class="sc-label">Need Token</span><span class="sc-value pink">${noToken}</span><span class="sc-sub">unconfigured</span></div>
     `;
   }
@@ -301,6 +419,8 @@ export class Dashboard {
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(300px, 1fr));gap:16px;">
           ${this.providers.map(p => {
+            const providerId = this.providerDomId(p.name);
+            const providerName = escapeHTML(p.name);
             const statusBadge = p.configured
               ? `<span style="font-size:0.7rem;padding:2px 6px;border-radius:4px;background:rgba(16,185,129,0.15);color:#10b981;border:1px solid rgba(16,185,129,0.3);">✅ Ready</span>`
               : `<span style="font-size:0.7rem;padding:2px 6px;border-radius:4px;background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3);">${p.requires_key ? '❌ Missing Key' : '🖥 Local'}</span>`;
@@ -309,7 +429,7 @@ export class Dashboard {
             return `
             <div style="border:1px solid var(--clr-border-light);border-radius:var(--radius-md);padding:16px;background:var(--clr-background);">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                <strong style="text-transform:capitalize;">${escapeHTML(p.name)}</strong>
+                <strong style="text-transform:capitalize;">${providerName}</strong>
                 ${statusBadge}
               </div>
               <p style="font-size:0.75rem;color:var(--clr-text-muted);margin:0 0 6px;">Source: <code>${escapeHTML(p.source)}</code></p>
@@ -317,13 +437,13 @@ export class Dashboard {
               <p style="font-size:0.75rem;color:var(--clr-text-muted);margin:0 0 12px;">Models detected: <strong>${p.model_count}</strong></p>
               ${p.requires_key ? `
                 <div style="display:flex;gap:8px;margin-bottom:12px;">
-                  <input type="password" id="input-prov-${p.name}" class="form-input" style="flex:1;height:32px;font-size:0.8rem;" placeholder="Paste API Key...">
-                  <button class="btn btn-primary btn-save-prov" data-prov="${p.name}" style="height:32px;padding:0 12px;font-size:0.8rem;">Save</button>
+                  <input type="password" id="${providerId}" class="form-input" style="flex:1;height:32px;font-size:0.8rem;" placeholder="Paste API Key...">
+                  <button class="btn btn-primary btn-save-prov" data-prov="${providerName}" data-input-id="${providerId}" style="height:32px;padding:0 12px;font-size:0.8rem;">Save</button>
                 </div>
               ` : ''}
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <span style="font-size:0.72rem;color:var(--clr-text-muted);font-weight:600;">MODEL LIST</span>
-                <button class="btn btn-ghost btn-sm btn-refresh-prov-models" data-prov="${p.name}" style="padding:2px 8px;font-size:0.72rem;">↻ Refresh</button>
+                <button class="btn btn-ghost btn-sm btn-refresh-prov-models" data-prov="${providerName}" style="padding:2px 8px;font-size:0.72rem;">↻ Refresh</button>
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap;min-height:28px;">
                 ${preview || `<span style="font-size:0.72rem;color:var(--clr-text-muted)">Belum ada model terdeteksi</span>`}
@@ -340,7 +460,8 @@ export class Dashboard {
     this.providersPanelEl.querySelectorAll('.btn-save-prov').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         const provName = (e.currentTarget as HTMLElement).dataset.prov!;
-        const input = this.providersPanelEl.querySelector<HTMLInputElement>(`#input-prov-${provName}`);
+        const inputId = (e.currentTarget as HTMLElement).dataset.inputId!;
+        const input = this.providersPanelEl.querySelector<HTMLInputElement>(`#${inputId}`);
         if (!input || !input.value.trim()) {
           showToast('Masukkan API key terlebih dahulu', 'error');
           return;
@@ -381,6 +502,10 @@ export class Dashboard {
         }
       });
     });
+  }
+
+  private providerDomId(name: string) {
+    return `input-prov-${name.toLowerCase().replace(/[^a-z0-9_-]/g, '-')}`;
   }
 
 

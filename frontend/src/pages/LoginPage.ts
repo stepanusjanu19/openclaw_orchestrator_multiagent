@@ -23,8 +23,23 @@ export class LoginPage {
   private build() {
     this.el.innerHTML = `
       <div class="login-bg">
-        <div class="login-glow login-glow-1"></div>
-        <div class="login-glow login-glow-2"></div>
+        <div class="login-grid"></div>
+      </div>
+    `;
+
+    const shell = document.createElement('div');
+    shell.className = 'login-shell';
+
+    const intro = document.createElement('section');
+    intro.className = 'login-intro';
+    intro.innerHTML = `
+      <div class="login-kicker">OpenClaw Control</div>
+      <h1>Multi-agent control plane yang ringkas dan terarah.</h1>
+      <p>Kelola agent, gateway, security, visitor intelligence, dan code tools dari satu dashboard operasional.</p>
+      <div class="login-feature-row">
+        <span>Realtime</span>
+        <span>Secure</span>
+        <span>Operator-first</span>
       </div>
     `;
 
@@ -35,10 +50,10 @@ export class LoginPage {
     const logoEl = document.createElement('div');
     logoEl.className = 'login-logo';
     logoEl.innerHTML = `
-      <div class="login-logo-icon">🦾</div>
+      <div class="login-logo-icon">OC</div>
       <div>
         <div class="login-logo-title">OpenClaw</div>
-        <div class="login-logo-sub">Multi-Agent Platform</div>
+        <div class="login-logo-sub">Control Platform</div>
       </div>
     `;
 
@@ -46,8 +61,8 @@ export class LoginPage {
     const headline = document.createElement('div');
     headline.className = 'login-headline';
     headline.innerHTML = `
-      <h1>Selamat Datang</h1>
-      <p>Masukkan password untuk mengakses dashboard</p>
+      <h1>Masuk ke dashboard</h1>
+      <p>Gunakan password operator untuk membuka panel kontrol.</p>
     `;
 
     // Form
@@ -75,15 +90,16 @@ export class LoginPage {
     this.loginBtn = document.createElement('button');
     this.loginBtn.type = 'submit';
     this.loginBtn.className = 'btn btn-primary login-btn';
-    this.loginBtn.innerHTML = '🔓 Masuk';
+    this.loginBtn.textContent = 'Masuk';
 
     const hint = document.createElement('p');
     hint.className = 'login-hint';
-    hint.innerHTML = `Default password: <code>admin</code> — ubah di <code>credentials/.env</code> → <code>DASHBOARD_PASSWORD</code>`;
+    hint.innerHTML = `Jika masih memakai default <code>admin</code>, segera ubah <code>DASHBOARD_PASSWORD</code> di <code>credentials/.env</code> dan restart backend.`;
 
     form.append(inputWrap, this.loginBtn, hint);
     card.append(logoEl, headline, form);
-    this.el.appendChild(card);
+    shell.append(intro, card);
+    this.el.appendChild(shell);
   }
 
   private async handleLogin() {
@@ -98,19 +114,19 @@ export class LoginPage {
 
     try {
       await api.login(password);
-      showToast('✅ Login berhasil', 'success');
+      showToast('Login berhasil', 'success');
       this.onSuccess();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg === 'UNAUTHORIZED' || msg.includes('salah')) {
-        showToast('❌ Password salah', 'error');
+        showToast('Password salah', 'error');
         this.passwordInput.select();
       } else {
         showToast(`Error: ${msg}`, 'error');
       }
     } finally {
       this.loginBtn.disabled = false;
-      this.loginBtn.innerHTML = '🔓 Masuk';
+      this.loginBtn.textContent = 'Masuk';
     }
   }
 }

@@ -44,21 +44,21 @@ export class StatusBar {
 
     this.el.innerHTML = `
       <span class="status-item ${state.error ? 'err' : 'ok'}">
-        ${state.error ? '⚠' : '●'} Backend ${state.error ? 'offline' : 'online'}
+        <span class="status-dot"></span> Backend ${state.error ? 'offline' : 'online'}
       </span>
       <span class="status-item">
-        🤖 Agents: <strong>${running}/${total}</strong> running
+        Agents <strong>${running}/${total}</strong> running
       </span>
       ${state.health ? `
         <span class="status-item">
-          ⏱ Uptime: ${state.health.uptime}
+          Uptime ${state.health.uptime}
         </span>
         <span class="status-item">
-          ⚙ ${state.health.go_version}
+          ${state.health.go_version}
         </span>
       ` : ''}
       <span class="spacer"></span>
-      <span class="status-item" style="color:var(--clr-text-muted)">
+      <span class="status-item status-product">
         OpenClaw Multi-Agent Platform v1.0
       </span>
     `;

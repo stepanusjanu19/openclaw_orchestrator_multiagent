@@ -13,6 +13,8 @@ import (
 	"io"
 	"log"
 	"multiagent-platform/internal/auth"
+	"multiagent-platform/internal/config"
+	"multiagent-platform/internal/netmeta"
 	"net/http"
 	"strings"
 )
@@ -26,6 +28,7 @@ type AuthHandler struct {
 	Sessions      *auth.SessionStore
 	InternalToken string
 	OCDir         string // Path ke ~/.openclaw untuk baca gateway token live
+	Cfg           *config.Config
 }
 
 // LoginRequest adalah body untuk POST /api/auth/login.
@@ -42,8 +45,8 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ekstrak IP real untuk audit log dan lockout
-	ip := realIP(r)
+	// Ekstrak IP client dengan trusted proxy policy agar lockout tidak bisa di-spoof via X-Forwarded-For.
+	ip := netmeta.ClientIPString(r, h.Cfg)
 
 	// ── Cek lockout sebelum menerima request ─────────────────────────────────
 	if locked, remaining := h.Sessions.IsLockedOut(ip); locked {
@@ -150,8 +153,9 @@ func AuthMiddleware(sessions *auth.SessionStore, internalToken string, next http
 		token := extractSessionToken(r)
 		authHeaderToken := extractBearerToken(r)
 
-		// Izinkan akses jika token sama dengan internal RPC token (dari Sub-Agent)
-		if internalToken != "" && authHeaderToken == internalToken {
+		// Internal bearer is only for explicitly internal machine-to-machine APIs.
+		// Do not allow it to bypass dashboard auth/CSRF for admin routes.
+		if internalToken != "" && authHeaderToken == internalToken && isInternalBearerRoute(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -206,20 +210,6 @@ func requiresCSRF(r *http.Request) bool {
 	}
 }
 
-// realIP mengekstrak IP real client (proxy-aware).
-func realIP(r *http.Request) string {
-	ip := r.Header.Get("X-Real-IP")
-	if ip == "" {
-		ip = r.Header.Get("X-Forwarded-For")
-	}
-	if ip == "" {
-		ip = strings.Split(r.RemoteAddr, ":")[0]
-	} else {
-		ip = strings.TrimSpace(strings.Split(ip, ",")[0])
-	}
-	return ip
-}
-
 func setSessionCookies(w http.ResponseWriter, r *http.Request, creds auth.SessionCredentials) {
 	http.SetCookie(w, newCookie(r, sessionCookieName, creds.Token, true))
 	http.SetCookie(w, newCookie(r, csrfCookieName, creds.CSRF, false))
@@ -265,4 +255,8 @@ func isPublicRoute(path string) bool {
 		}
 	}
 	return false
+}
+
+func isInternalBearerRoute(path string) bool {
+	return strings.HasPrefix(path, "/api/security/internal/")
 }

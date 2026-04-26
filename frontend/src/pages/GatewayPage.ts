@@ -58,20 +58,20 @@ export class GatewayPage {
   private copyWebhook(url: string) {
     if (navigator.clipboard) {
       navigator.clipboard.writeText(url);
-      showToast('Webhook URL disalin!', 'success');
+      showToast('URL disalin!', 'success');
     }
   }
 
   private render() {
     const listHtml = this.loading ? `
-      <div class="gateway-list skeleton-block" style="padding:40px; text-align:center; color:var(--clr-text-muted);">
+      <div class="gateway-list gateway-empty skeleton-block">
         Mengambil data gateway...
       </div>
     ` : this.gateways.length === 0 ? `
-      <div class="gateway-list" style="padding:40px; text-align:center; color:var(--clr-text-muted);">
-        <div style="font-size:3rem; margin-bottom:12px;">🔀</div>
-        Belum ada Gateway yang dikonfigurasi.<br/>
-        Gunakan tombol di atas untuk menyambungkan Agent ke platform messaging.
+      <div class="gateway-list gateway-empty">
+        <div class="empty-icon">G</div>
+        <strong>Belum ada gateway</strong>
+        <span>Gunakan tombol di atas untuk menyambungkan agent ke platform messaging.</span>
       </div>
     ` : `
       <div class="gateway-list">
@@ -81,28 +81,37 @@ export class GatewayPage {
           const sId = escapeHTML(gw.id);
           const sAgent = escapeHTML(gw.agent_id);
           const sUrl = escapeHTML(gw.webhook_url);
+          const sAuth = escapeHTML(gw.auth_mode || (gw.public ? 'public' : 'signature'));
+          const expires = gw.expires_at ? new Date(gw.expires_at).toLocaleString() : '-';
+          const policy = gw.auth_mode === 'public-restricted'
+            ? 'TTL + visitor intelligence + risk scoring'
+            : gw.auth_mode === 'hmac-sha256'
+              ? 'HMAC timestamp + nonce + body hash'
+              : 'Platform signature validation';
           return `
           <div class="gateway-row">
-            <div>
+            <div class="gateway-platform-cell">
               <span class="gateway-platform-badge platform-${sPlatform}">
                 ${sPlatform.toUpperCase()}
               </span>
             </div>
-            <div>
-              <div style="font-weight:600;font-size:0.95rem;">${sLabel}</div>
-              <div style="font-size:0.7rem;color:var(--clr-text-muted);font-family:var(--font-mono)">ID: ${sId}</div>
+            <div class="gateway-meta">
+              <strong>${sLabel}</strong>
+              <code>ID: ${sId}</code>
+              <span class="${gw.expired ? 'text-danger' : ''}">Auth: ${sAuth} · Expires: ${escapeHTML(expires)}</span>
+              <span>Policy: ${escapeHTML(policy)}</span>
             </div>
-            <div>
-              <div style="font-size:0.75rem;color:var(--clr-text-muted)">Agent:</div>
-              <div style="font-weight:600;">🤖 ${sAgent}</div>
+            <div class="gateway-agent">
+              <span>Agent</span>
+              <strong>${sAgent}</strong>
             </div>
             <div>
               <div class="gateway-webhook-url" title="Klik untuk copy webhook url" data-url="${sUrl}">
-               🔗 ${sUrl}
+               ${sUrl}
               </div>
             </div>
-            <div style="display:flex;gap:4px;">
-               <button class="btn btn-sm btn-ghost btn-delete-gw" style="color:var(--clr-danger)" data-id="${sId}">🗑 Hapus</button>
+            <div class="gateway-actions">
+               <button class="btn btn-sm btn-ghost btn-delete-gw btn-danger-text" data-id="${sId}">Hapus</button>
             </div>
           </div>
         `}).join('')}
@@ -110,20 +119,19 @@ export class GatewayPage {
     `;
 
     this.container.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:24px; flex-wrap:wrap; gap:16px;">
+      <div class="page-header-row page-header-inline">
         <div class="page-title">
+          <span class="page-eyebrow">Webhook relay</span>
           <h1>Gateway Manager</h1>
           <p>Sambungkan agent aktif ke platform eksternal seperti WhatsApp atau webhook.</p>
         </div>
-        <button id="btn-add-gw" class="btn btn-primary" ${this.loading ? 'disabled' : ''}>
-          ➕ Tambah Gateway
-        </button>
+        <button id="btn-add-gw" class="btn btn-primary page-primary-action" ${this.loading ? 'disabled' : ''}>Tambah Gateway</button>
       </div>
       
       ${listHtml}
       
-      <div style="margin-top:24px; padding:16px; background:rgba(34,211,165,0.08); border:1px solid rgba(34,211,165,0.2); border-radius:var(--radius-md); font-size:0.85rem;">
-         <h4 style="color:var(--clr-success); margin-bottom:6px;">💡 Cara Menggunakan Meta Webhook (WhatsApp)</h4>
+      <div class="guide-panel">
+         <h4>Cara Menggunakan Meta Webhook (WhatsApp)</h4>
          1. Copy URL Webhook dari gateway yang dibuat.<br/>
          2. Paste di konfigurasi Webhook Meta App Anda.<br/>
          3. Gunakan Verify Token yang Anda tentukan saat membuat gateway ini.<br/>

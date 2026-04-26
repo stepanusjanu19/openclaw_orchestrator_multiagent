@@ -13,6 +13,14 @@ export class ConfigPage {
 
   getElement() { return this.el; }
   async mount() {
+    await Promise.allSettled([
+      this.loadHardenAssistant(),
+      this.loadRouterStatus(),
+    ]);
+  }
+  unmount() {}
+
+  private async loadHardenAssistant() {
     const root = this.el.querySelector('#harden-assistant-root') as HTMLDivElement;
     if (!root) return;
 
@@ -97,7 +105,65 @@ export class ConfigPage {
       root.appendChild(msg);
     }
   }
-  unmount() {}
+
+  private async loadRouterStatus() {
+    const root = this.el.querySelector('#router-status-root') as HTMLDivElement;
+    if (!root) return;
+    root.textContent = '';
+
+    try {
+      const status = await api.getRouterStatus();
+      const badge = document.createElement('span');
+      badge.style.cssText = `display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:0.76rem;font-weight:700;border:1px solid ${status.enabled ? 'rgba(34,211,238,0.35)' : 'rgba(148,163,184,0.25)'};background:${status.enabled ? 'rgba(34,211,238,0.12)' : 'rgba(148,163,184,0.08)'};color:${status.enabled ? 'var(--clr-accent-2)' : 'var(--clr-text-muted)'};`;
+      badge.textContent = status.agent_routing_enabled ? `Agent routing: ${status.provider}` : 'Agent routing: disabled';
+
+      const grid = document.createElement('div');
+      grid.style.cssText = 'display:grid;grid-template-columns:150px 1fr;gap:8px 14px;margin-top:14px;font-family:var(--font-mono);font-size:0.8rem;';
+      const addRow = (label: string, value: string) => {
+        const k = document.createElement('span');
+        k.style.color = 'var(--clr-text-muted)';
+        k.textContent = label;
+        const v = document.createElement('span');
+        v.style.color = 'var(--clr-accent-2)';
+        v.style.wordBreak = 'break-all';
+        v.textContent = value;
+        grid.append(k, v);
+      };
+      addRow('base_url', status.masked_base_url || '-');
+      addRow('agent_routing', status.agent_routing_enabled ? 'enabled' : 'disabled');
+      addRow('reachable', status.reachable ? 'yes' : 'no');
+      addRow('models', String(status.model_count || 0));
+      addRow('loopback_only', status.require_loopback ? 'yes' : 'no');
+      addRow('cloud_allowed', status.allow_cloud ? 'yes' : 'no');
+      addRow('token', status.token_configured ? 'configured' : 'empty');
+      addRow('tool_calls', status.tool_calls_allowed ? 'allowed' : 'blocked');
+
+      root.appendChild(badge);
+      root.appendChild(grid);
+
+      const warnings = [...(status.warnings || [])];
+      if (status.error) warnings.unshift(status.error);
+      if (warnings.length > 0) {
+        const warnBox = document.createElement('div');
+        warnBox.style.cssText = 'margin-top:14px;padding:10px 12px;border-radius:6px;border:1px solid rgba(245,158,11,0.35);background:rgba(245,158,11,0.08);color:#fbbf24;font-size:0.8rem;line-height:1.55;';
+        const title = document.createElement('div');
+        title.style.fontWeight = '700';
+        title.textContent = 'Security warnings';
+        warnBox.appendChild(title);
+        for (const warning of warnings.slice(0, 5)) {
+          const item = document.createElement('div');
+          item.textContent = `- ${warning}`;
+          warnBox.appendChild(item);
+        }
+        root.appendChild(warnBox);
+      }
+    } catch (err: any) {
+      const msg = document.createElement('span');
+      msg.style.cssText = 'color:#ef4444;font-size:0.8rem;';
+      msg.textContent = `Gagal memuat status AI router: ${err.message}`;
+      root.appendChild(msg);
+    }
+  }
 
   private build() {
     const header = document.createElement('div');
@@ -151,6 +217,27 @@ OPENCLAW_MODEL=openclaw/main</pre>
 
           <div class="no-token-banner" style="margin-top:16px">
             ⚠️ Pastikan BOTS_DIR di <code>.env</code> diisi dengan path absolut ke folder <code>bots/</code>
+          </div>
+        </div>
+
+        <!-- AI Router Status -->
+        <div class="card">
+          <h3 style="margin-bottom:16px;display:flex;align-items:center;gap:8px">
+            🧭 <span>AI Router Status</span>
+          </h3>
+          <p style="color:var(--clr-text-secondary);font-size:0.85rem;margin-bottom:12px;line-height:1.6">
+            9Router/OmniRoute dapat berjalan sebagai runtime router private. Agent baru akan memakai router hanya jika
+            <code>AI_ROUTER_ENABLED=true</code>; OpenClaw Gateway, relay webhook, Visitor, dan Gateway tetap memakai jalur existing.
+          </p>
+          <div style="background:rgba(34,211,238,0.06);border-left:3px solid var(--clr-accent-2);padding:12px;border-radius:4px;margin-bottom:16px">
+            <span style="font-size:0.8rem;color:var(--clr-accent-2);font-weight:600">PRIVATE DOWNSTREAM ONLY</span><br/>
+            <span style="color:var(--clr-text-secondary);font-size:0.8rem">
+              Router running berarti proses tersedia. Agent routing enabled berarti agent mengirim chat completion ke router.
+              Jangan expose port router ke internet.
+            </span>
+          </div>
+          <div id="router-status-root">
+            <span style="color:var(--clr-text-muted);font-size:0.8rem;">Loading router status...</span>
           </div>
         </div>
 

@@ -88,10 +88,10 @@ export class AddAgentModal {
     header.style.cssText = 'flex-shrink:0;';
     header.innerHTML = `
       <div>
-        <h2 style="font-size:1.1rem;font-weight:700;">${this.prefilled ? `📥 Import Agent: ${escapeHTML(this.prefilled.id)}` : '🤖 Tambah Agent Baru'}</h2>
-        <p style="font-size:0.78rem;color:var(--clr-text-muted);margin-top:2px;">
+        <h2 class="modal-title">${this.prefilled ? `Import Agent: ${escapeHTML(this.prefilled.id)}` : 'Tambah Agent Baru'}</h2>
+        <p class="modal-subtitle">
           ${this.prefilled
-            ? `Dari openclaw.json — ${this.prefilled.has_bot_token ? '✅ Token terdeteksi' : '⚠️ Token perlu diisi manual'}`
+            ? `Dari openclaw.json - ${this.prefilled.has_bot_token ? 'token terdeteksi' : 'token perlu diisi manual'}`
             : 'Konfigurasi lengkap dengan workspace files dan persona'}
         </p>
       </div>
@@ -107,8 +107,8 @@ export class AddAgentModal {
     const tabBar = document.createElement('div');
     tabBar.style.cssText = 'display:flex;border-bottom:1px solid var(--clr-border);padding:0 20px;background:var(--clr-surface-alt);flex-shrink:0;';
 
-    this.tabBasicBtn = this.makeTabBtn('📋 Info Dasar', true);
-    this.tabWsBtn = this.makeTabBtn('🗂️ Workspace Files', false);
+    this.tabBasicBtn = this.makeTabBtn('Info Dasar', true);
+    this.tabWsBtn = this.makeTabBtn('Workspace Files', false);
 
     this.tabBasicBtn.onclick = () => this.switchTab('basic');
     this.tabWsBtn.onclick = () => {
@@ -169,7 +169,7 @@ export class AddAgentModal {
     this.submitBtn = document.createElement('button');
     this.submitBtn.type = 'button'; // ← type="button" to avoid issues, we handle click manually
     this.submitBtn.className = 'btn btn-primary';
-    this.submitBtn.innerHTML = this.prefilled ? '📥 Import Agent' : '➕ Buat Agent';
+    this.submitBtn.textContent = this.prefilled ? 'Import Agent' : 'Buat Agent';
     this.submitBtn.onclick = () => this.handleSubmit();
 
     footer.append(cancelBtn, this.submitBtn);
@@ -178,7 +178,7 @@ export class AddAgentModal {
     let importBanner = '';
     if (this.prefilled?.has_bot_token) {
       importBanner = `<div style="background:rgba(34,211,165,0.08);border:1px solid rgba(34,211,165,0.2);border-radius:var(--radius-sm);padding:10px 14px;font-size:0.8rem;color:var(--clr-success);margin-bottom:16px">
-        ✅ Bot token berhasil dibaca dari openclaw.json.
+        Bot token berhasil dibaca dari openclaw.json.
       </div>`;
     }
 
@@ -217,7 +217,7 @@ export class AddAgentModal {
         <span class="form-help">Model dikelompokkan berdasarkan tier. Kosongkan untuk auto-generate.</span>
       </div>
       <div style="background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.2);border-radius:var(--radius-sm);padding:10px 14px;font-size:0.8rem;color:var(--clr-primary);">
-        💡 Klik tab <b>🗂️ Workspace Files</b> untuk mengatur SOUL.md, IDENTITY.md dan file lainnya.
+        Klik tab <b>Workspace Files</b> untuk mengatur SOUL.md, IDENTITY.md dan file lainnya.
       </div>
     `;
     this.tabBasicEl.appendChild(basicContent);
@@ -276,7 +276,7 @@ export class AddAgentModal {
 
     try {
       const res = await api.createAgent(payload);
-      showToast(`✅ Agent "${label}" berhasil dibuat!`, 'success');
+      showToast(`Agent "${label}" berhasil dibuat!`, 'success');
       this.onCreated(res.agent.id);
       this.close();
     } catch (err: unknown) {
@@ -284,7 +284,7 @@ export class AddAgentModal {
       showToast(`Gagal buat agent: ${msg}`, 'error');
       this.loading = false;
       this.submitBtn.disabled = false;
-      this.submitBtn.innerHTML = this.prefilled ? '📥 Import Agent' : '➕ Buat Agent';
+      this.submitBtn.textContent = this.prefilled ? 'Import Agent' : 'Buat Agent';
     }
   }
 
@@ -300,17 +300,17 @@ export class AddAgentModal {
       models.forEach(m => {
         const opt = document.createElement('option');
         opt.value = m.id;
-        const keyIcon = m.has_api_key ? ' 🔑' : '';
-        opt.textContent = `${m.label}${keyIcon}  [${m.provider}]`;
+        const keyLabel = m.has_api_key ? ' key' : '';
+        opt.textContent = `${m.label}${keyLabel}  [${m.provider}]`;
         grp.appendChild(opt);
       });
       return grp;
     };
 
     const g = this.modelGroups;
-    [buildGroup('☁️ Cloud', g.cloud),
-     buildGroup('☁️ Cloud Proxied (via local bridge)', g.cloud_proxied),
-     buildGroup('🖥️ Local', g.local)
+    [buildGroup('Cloud', g.cloud),
+     buildGroup('Cloud Proxied (via local bridge)', g.cloud_proxied),
+     buildGroup('Local', g.local)
     ].filter(Boolean).forEach(grp => this.modelSelect.appendChild(grp!));
 
     // Pre-select prefilled model if available
@@ -361,7 +361,7 @@ export class AddAgentModal {
         color:${isActive ? 'var(--clr-primary)' : 'var(--clr-text)'};
         transition:background 0.12s;
       `;
-      li.innerHTML = `<span>📄</span><span>${file}</span>`;
+      li.textContent = file;
       li.addEventListener('mouseenter', () => { if (!isActive) li.style.background = 'rgba(255,255,255,0.04)'; });
       li.addEventListener('mouseleave', () => { if (!isActive) li.style.background = 'transparent'; });
       li.addEventListener('click', () => {

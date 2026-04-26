@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"multiagent-platform/internal/openclaw"
+	"multiagent-platform/internal/security"
 	"net/http"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ type OpenClawHandler struct {
 	GatewayURL    string
 	GatewayToken  string
 	WorkspaceDir  string
+	Security      *security.Manager
 	KnownAgentIDs func() []string // callback untuk dapat daftar agent yang sudah registered
 }
 
@@ -176,6 +178,7 @@ func (h *OpenClawHandler) RunCommand(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.auditOpenClawCommand(result, err)
 	status := http.StatusOK
 	if err != nil {
 		status = http.StatusBadRequest
@@ -189,6 +192,39 @@ func (h *OpenClawHandler) RunCommand(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(result)
+}
+
+func (h *OpenClawHandler) auditOpenClawCommand(result openclaw.CommandRunResult, err error) {
+	if h == nil || h.Security == nil {
+		return
+	}
+	status := "success"
+	if result.ConfirmationRequired {
+		status = "confirmation_required"
+	} else if result.Error != "" {
+		status = "error"
+		if result.Error == "blocked_by_policy" || result.Error == "sensitive_config_key_blocked" {
+			status = "blocked"
+		}
+	}
+	event := security.AuditEvent{
+		Level:   "INFO",
+		Channel: "openclaw_cli",
+		Status:  status,
+		Message: "openclaw command run",
+		Metadata: map[string]interface{}{
+			"command_id": result.ID,
+			"exit_code":  result.ExitCode,
+		},
+	}
+	if status == "blocked" {
+		event.Level = "SECURITY"
+	}
+	if err != nil {
+		event.Level = "ERROR"
+		event.ErrorClass = security.MaskKnownSecrets(err.Error())
+	}
+	h.Security.EnqueueAudit(event)
 }
 
 // extractBaseURL mengambil base URL dari URL lengkap.

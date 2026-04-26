@@ -42,18 +42,9 @@ export class PersonaEditor {
 
     // Info banner
     const info = document.createElement('div');
-    info.style.cssText = `
-      background: rgba(108,99,255,0.08);
-      border: 1px solid rgba(108,99,255,0.2);
-      border-radius: var(--radius-sm);
-      padding: 8px 12px;
-      font-size: 0.78rem;
-      color: var(--clr-accent-1);
-      margin-bottom: 16px;
-      line-height: 1.5;
-    `;
+    info.className = 'info-banner';
     info.innerHTML = `
-      <strong>📝 SOUL.md</strong> mendefinisikan persona, tone, dan batasan agent.
+      <strong>SOUL.md</strong> mendefinisikan persona, tone, dan batasan agent.
       Gunakan Markdown. Perubahan aktif setelah agent di-restart.
     `;
 
@@ -74,7 +65,7 @@ export class PersonaEditor {
 
     this.saveBtn = document.createElement('button');
     this.saveBtn.className = 'btn btn-primary';
-    this.saveBtn.innerHTML = '💾 Simpan SOUL.md';
+    this.saveBtn.textContent = 'Simpan SOUL.md';
     this.saveBtn.addEventListener('click', () => this.save());
 
     footer.append(cancelBtn, this.saveBtn);
@@ -128,7 +119,7 @@ export class PersonaEditor {
 
     try {
       await api.updatePersona(this.agentId, content);
-      showToast(`✅ SOUL.md agent "${this.agentId}" berhasil disimpan. Restart agent untuk apply.`, 'success', 5000);
+      showToast(`SOUL.md agent "${this.agentId}" berhasil disimpan. Restart agent untuk apply.`, 'success', 5000);
       this.close();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -136,7 +127,7 @@ export class PersonaEditor {
     } finally {
       this.loading = false;
       this.saveBtn.disabled = false;
-      this.saveBtn.innerHTML = '💾 Simpan SOUL.md';
+      this.saveBtn.textContent = 'Simpan SOUL.md';
     }
   }
 }
