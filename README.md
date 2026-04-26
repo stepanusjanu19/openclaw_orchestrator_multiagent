@@ -11,7 +11,7 @@
 
 ![alt text](image-1.png)
 
-![alt text](image.png)
+![alt text](image-2.png)
 
 Platform ini adalah **orchestrator** (pusat kendali) yang memungkinkan Anda untuk menjalankan, memonitor, dan mengonfigurasi banyak **Agent AI Telegram (OpenClaw)** secara bersamaan di atas satu perangkat/server, semuanya melalui **web dashboard** yang bersih dan modern.
 
