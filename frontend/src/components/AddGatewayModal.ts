@@ -1,6 +1,7 @@
 import { api, type AgentInfo } from '../api/client.js';
 import { showToast } from './Toast.js';
-import { escapeHTML } from '../utils/dom.js';
+
+type CreatedGateway = Awaited<ReturnType<typeof api.createGateway>>;
 
 export class AddGatewayModal {
   private overlay: HTMLDivElement;
@@ -44,19 +45,12 @@ export class AddGatewayModal {
     closeBtn.onclick = () => this.close();
     header.appendChild(closeBtn);
 
-    let agentOptions = '<option value="">-- Pilih Agent --</option>';
-    this.activeAgents.forEach(a => {
-      agentOptions += `<option value="${escapeHTML(a.id)}">${escapeHTML(a.label)} (${escapeHTML(a.id)})</option>`;
-    });
-
     this.formEl.style.padding = '20px';
     this.formEl.innerHTML = `
       <div class="form-group">
         <label class="form-label" for="gw-agent">Pilih Agent</label>
-        <select id="gw-agent" class="form-input" required>
-          ${agentOptions}
-        </select>
-        <span class="form-help">Hanya agent yang aktif yang bisa merespons webhook.</span>
+        <select id="gw-agent" class="form-input" required></select>
+        <span class="form-help" id="gw-agent-help">Hanya agent aktif tanpa HTTP gateway aktif yang bisa dipilih.</span>
       </div>
 
       <div class="form-group">
@@ -87,7 +81,7 @@ export class AddGatewayModal {
         <!-- Akan diisi otomatis berdasarkan platform -->
       </div>
 
-      <div id="gw-create-result" style="display:none;margin-top:16px;"></div>
+      <div id="gw-create-result" class="gateway-create-result" hidden></div>
 
       <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:24px;">
         <button type="button" class="btn btn-ghost" id="gw-cancel">Batal</button>
@@ -97,6 +91,8 @@ export class AddGatewayModal {
 
     modal.append(header, this.formEl);
     this.overlay.appendChild(modal);
+
+    this.populateAgentSelect();
 
     const platformSelect = this.formEl.querySelector<HTMLSelectElement>('#gw-platform')!;
     const ds = this.formEl.querySelector<HTMLDivElement>('#dynamic-config-section')!;
@@ -159,11 +155,21 @@ export class AddGatewayModal {
       const submitBtn = this.formEl.querySelector<HTMLButtonElement>('#gw-submit')!;
       submitBtn.disabled = true;
       submitBtn.textContent = 'Menyimpan...';
+      this.clearCreateResult();
 
       const agentId = this.formEl.querySelector<HTMLSelectElement>('#gw-agent')!.value;
       const platform = platformSelect.value;
       const label = this.formEl.querySelector<HTMLInputElement>('#gw-label')!.value;
       const ttlDays = this.formEl.querySelector<HTMLSelectElement>('#gw-ttl')!.value;
+
+      if (!agentId) {
+        const message = 'Pilih agent aktif yang belum memiliki HTTP gateway aktif.';
+        showToast(message, 'error');
+        this.renderCreateError(message);
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Buat Gateway';
+        return;
+      }
 
       const config: Record<string, string> = { ttl_days: ttlDays };
       
@@ -183,26 +189,7 @@ export class AddGatewayModal {
         const created = await api.createGateway({ agent_id: agentId, platform, label, config });
         showToast('Gateway berhasil dibuat!', 'success');
         this.onCreated();
-        const result = this.formEl.querySelector<HTMLDivElement>('#gw-create-result')!;
-        result.style.display = 'block';
-        result.innerHTML = `
-          <div class="result-token-box">
-            <strong>Webhook dibuat</strong>
-            <div style="margin-top:8px;font-size:0.76rem;color:var(--clr-text-muted);">URL</div>
-            <code>${escapeHTML(created.webhook_url)}</code>
-            <div style="margin-top:8px;font-size:0.75rem;color:var(--clr-text-muted);line-height:1.45;">
-              Buka URL ini di browser untuk mencatat visitor + GPS consent, atau kirim POST JSON ke URL yang sama untuk webhook message.
-            </div>
-            ${created.webhook_secret ? `
-              <div style="margin-top:10px;font-size:0.76rem;color:var(--clr-text-muted);">HMAC Secret - tampil sekali</div>
-              <code>${escapeHTML(created.webhook_secret)}</code>
-              <div style="margin-top:8px;font-size:0.75rem;color:var(--clr-text-muted);line-height:1.45;">
-                Signature: <code>v1=HMAC_SHA256(secret, METHOD + "\\n" + PATH_WITH_QUERY + "\\n" + TIMESTAMP + "\\n" + NONCE + "\\n" + SHA256(body))</code>
-              </div>
-            ` : ''}
-            <div style="margin-top:8px;font-size:0.75rem;color:var(--clr-text-muted);">Expires: ${escapeHTML(created.expires_at || '-')}</div>
-          </div>
-        `;
+        this.renderCreateSuccess(created);
         submitBtn.disabled = false;
         submitBtn.type = 'button';
         submitBtn.textContent = 'Selesai';
@@ -210,21 +197,109 @@ export class AddGatewayModal {
       } catch (err: any) {
         const message = err.message || String(err);
         showToast(message, 'error');
-        if (message.includes('HTTP gateway aktif')) {
-          const result = this.formEl.querySelector<HTMLDivElement>('#gw-create-result')!;
-          result.style.display = 'block';
-          result.innerHTML = `
-            <div class="result-token-box" style="border-color:rgba(239,68,68,0.35);">
-              <strong style="color:var(--clr-danger)">HTTP gateway aktif sudah ada</strong>
-              <div style="margin-top:8px;font-size:0.78rem;color:var(--clr-text-muted);line-height:1.45;">
-                Satu agent hanya boleh memiliki satu HTTP webhook aktif. Hapus atau tunggu gateway lama expired sebelum membuat yang baru.
-              </div>
-            </div>
-          `;
-        }
+        this.renderCreateError(message);
         submitBtn.disabled = false;
         submitBtn.textContent = 'Buat Gateway';
       }
     });
+  }
+
+  private populateAgentSelect() {
+    const select = this.formEl.querySelector<HTMLSelectElement>('#gw-agent')!;
+    const help = this.formEl.querySelector<HTMLSpanElement>('#gw-agent-help')!;
+    const submitBtn = this.formEl.querySelector<HTMLButtonElement>('#gw-submit')!;
+
+    select.replaceChildren();
+
+    if (this.activeAgents.length === 0) {
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = 'Tidak ada agent tersedia';
+      select.appendChild(empty);
+      select.disabled = true;
+      submitBtn.disabled = true;
+      help.textContent = 'Semua agent aktif sudah memiliki HTTP gateway aktif, atau belum ada agent yang running.';
+      return;
+    }
+
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = '-- Pilih Agent --';
+    select.appendChild(placeholder);
+
+    for (const agent of this.activeAgents) {
+      const option = document.createElement('option');
+      option.value = agent.id;
+      option.textContent = `${agent.label} (${agent.id})`;
+      select.appendChild(option);
+    }
+  }
+
+  private clearCreateResult() {
+    const result = this.formEl.querySelector<HTMLDivElement>('#gw-create-result')!;
+    result.hidden = true;
+    result.replaceChildren();
+  }
+
+  private renderCreateSuccess(created: CreatedGateway) {
+    const result = this.formEl.querySelector<HTMLDivElement>('#gw-create-result')!;
+    result.replaceChildren();
+
+    const card = this.createResultCard('success', 'Webhook dibuat');
+    this.appendResultField(card, 'URL', created.webhook_url);
+    this.appendResultNote(card, 'Buka URL ini di browser untuk mencatat visitor + GPS consent, atau kirim POST JSON ke URL yang sama untuk webhook message.');
+    this.appendResultField(card, 'Auth mode', created.auth_mode || '-');
+    this.appendResultField(card, 'Expires', created.expires_at || '-');
+
+    if (created.webhook_secret) {
+      this.appendResultField(card, 'HMAC Secret - tampil sekali', created.webhook_secret);
+      this.appendResultNote(card, 'Signature: v1=HMAC_SHA256(secret, METHOD + "\\n" + PATH_WITH_QUERY + "\\n" + TIMESTAMP + "\\n" + NONCE + "\\n" + SHA256(body))');
+    }
+
+    result.appendChild(card);
+    result.hidden = false;
+  }
+
+  private renderCreateError(message: string) {
+    const result = this.formEl.querySelector<HTMLDivElement>('#gw-create-result')!;
+    result.replaceChildren();
+
+    const card = this.createResultCard('error', message.includes('HTTP gateway aktif') ? 'HTTP gateway aktif sudah ada' : 'Gateway gagal dibuat');
+    this.appendResultNote(card, message);
+
+    if (message.includes('HTTP gateway aktif')) {
+      this.appendResultNote(card, 'Satu agent hanya boleh memiliki satu HTTP webhook aktif. Hapus atau tunggu gateway lama expired sebelum membuat yang baru.');
+    }
+
+    result.appendChild(card);
+    result.hidden = false;
+  }
+
+  private createResultCard(kind: 'success' | 'error', titleText: string): HTMLDivElement {
+    const card = document.createElement('div');
+    card.className = `gateway-result-card gateway-result-${kind}`;
+
+    const title = document.createElement('strong');
+    title.textContent = titleText;
+    card.appendChild(title);
+    return card;
+  }
+
+  private appendResultField(card: HTMLElement, labelText: string, valueText: string) {
+    const label = document.createElement('div');
+    label.className = 'gateway-result-label';
+    label.textContent = labelText;
+
+    const code = document.createElement('code');
+    code.textContent = valueText;
+
+    card.append(label, code);
+  }
+
+  private appendResultNote(card: HTMLElement, noteText: string) {
+    const note = document.createElement('div');
+    note.className = 'gateway-result-note';
+    note.textContent = noteText;
+    card.appendChild(note);
   }
 }

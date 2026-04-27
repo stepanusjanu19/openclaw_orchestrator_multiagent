@@ -4,12 +4,12 @@
 package handlers
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"fmt"
 )
 
 type WorkspaceHandler struct {
@@ -45,6 +45,10 @@ func (h *WorkspaceHandler) GetWorkspaceFiles(w http.ResponseWriter, r *http.Requ
 
 	var filenames []string
 	for _, f := range files {
+		st, err := os.Lstat(f)
+		if err != nil || st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() {
+			continue
+		}
 		filenames = append(filenames, filepath.Base(f))
 	}
 
@@ -64,11 +68,11 @@ func (h *WorkspaceHandler) GetWorkspaceFile(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	filename := r.URL.Query().Get("name")
-	
+
 	if filename == "" {
 		filename = "SOUL.md" // fallback
 	}
-	
+
 	cleanName := sanitizeFilename(filename)
 	if cleanName == "" {
 		jsonError(w, http.StatusBadRequest, "Invalid filename")
@@ -79,7 +83,7 @@ func (h *WorkspaceHandler) GetWorkspaceFile(w http.ResponseWriter, r *http.Reque
 	soulDir := filepath.Dir(soulPath)
 	targetPath := filepath.Join(soulDir, cleanName)
 
-	data, err := os.ReadFile(targetPath)
+	data, err := readRegularFileNoSymlink(targetPath, 5<<20)
 	if os.IsNotExist(err) {
 		jsonError(w, http.StatusNotFound, fmt.Sprintf("File %s tidak ditemukan di workspace agent %s", cleanName, agentID))
 		return
@@ -105,7 +109,7 @@ func (h *WorkspaceHandler) UpdateWorkspaceFile(w http.ResponseWriter, r *http.Re
 		return
 	}
 	filename := r.URL.Query().Get("name")
-	
+
 	if filename == "" {
 		filename = "SOUL.md"
 	}
@@ -129,13 +133,13 @@ func (h *WorkspaceHandler) UpdateWorkspaceFile(w http.ResponseWriter, r *http.Re
 	soulPath := ResolveSoulMDPath(h.App.Cfg.OpenClawWorkspaceDir, agentID)
 	soulDir := filepath.Dir(soulPath)
 	targetPath := filepath.Join(soulDir, cleanName)
-	
-	if err := os.MkdirAll(soulDir, 0755); err != nil {
+
+	if err := mkdirSecure(soulDir); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Gagal buat direktori: "+err.Error())
 		return
 	}
 
-	if err := os.WriteFile(targetPath, []byte(content), 0644); err != nil {
+	if err := writeFileNoSymlink(targetPath, []byte(content)); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Gagal tulis file: "+err.Error())
 		return
 	}

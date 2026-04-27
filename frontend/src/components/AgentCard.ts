@@ -82,7 +82,7 @@ export class AgentCard {
       warningEl.className = 'no-token-banner';
       warningEl.textContent = 'Token Telegram belum dikonfigurasi - edit ';
       const code = document.createElement('code');
-      code.textContent = `credentials/agents/${info.id}.env`;
+      code.textContent = 'credentials/agents.json';
       warningEl.appendChild(code);
     }
 

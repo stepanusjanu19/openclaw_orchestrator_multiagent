@@ -40,6 +40,9 @@ function authHeaders(method: string): HeadersInit {
 export interface AgentStatus {
   id: string; label: string; running: boolean;
   started_at?: string; pid?: number;
+  runtime_source_mtime?: string;
+  runtime_stale?: boolean;
+  runtime_warning?: string;
 }
 
 export interface AgentInfo {
@@ -85,6 +88,8 @@ export interface RouterStatus {
   runtime_dir?: string;
   loopback_enforced?: boolean;
   process_group_enabled?: boolean;
+  route_target: 'openclaw_gateway' | 'ai_router' | 'direct_openrouter' | 'direct_openai' | 'direct_google' | 'direct_xai' | 'direct_anthropic' | 'ollama_direct' | 'direct_llamacpp';
+  runtime_supported: boolean;
   security_warnings?: string[];
   security_notices?: string[];
   reachable: boolean;
@@ -98,7 +103,40 @@ export interface RouterStatus {
 export interface CreateAgentPayload {
   id: string; label: string; telegram_bot_token: string;
   openclaw_model?: string; persona?: string;
+  template_profile?: string; tone_profile?: string;
+  model_route?: ModelRouteMeta;
   workspace_files?: Record<string, string>;
+}
+
+export interface AgentTemplateProfile {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export interface AgentTemplateCatalog {
+  default_role_profile: string;
+  default_tone_profile: string;
+  files: string[];
+  role_profiles: AgentTemplateProfile[];
+  tone_profiles: AgentTemplateProfile[];
+}
+
+export interface AgentTemplatePreviewPayload {
+  id: string;
+  label: string;
+  template_profile?: string;
+  tone_profile?: string;
+  workspace_files?: Record<string, string>;
+}
+
+export interface AgentTemplatePreview {
+  id: string;
+  label: string;
+  template_profile: string;
+  tone_profile: string;
+  files: string[];
+  workspace_files: Record<string, string>;
 }
 
 // Model classification types
@@ -109,6 +147,23 @@ export interface ModelEntry {
   tier: 'local' | 'cloud_proxied' | 'cloud';
   tier_label: string; // "☁️ Cloud Proxied"
   has_api_key: boolean; // true jika menggunakan real API key (bukan placeholder)
+  route_target: 'openclaw_gateway' | 'ai_router' | 'direct_openrouter' | 'direct_openai' | 'direct_google' | 'direct_xai' | 'direct_anthropic' | 'ollama_direct' | 'direct_llamacpp';
+  runtime_supported: boolean;
+  adapter_id?: string;
+  canonical_model?: string;
+  outbound_model_example?: string;
+  provider_base_url?: string;
+  provider_docs_url?: string;
+  runtime_notes?: string[];
+  warnings?: string[];
+}
+export interface ModelRouteMeta {
+  route_target?: ModelEntry['route_target'];
+  tier?: ModelEntry['tier'];
+  adapter_id?: string;
+  outbound_model?: string;
+  provider_base_url?: string;
+  runtime_supported?: boolean;
 }
 export interface ModelGroups {
   cloud: ModelEntry[];
@@ -377,6 +432,14 @@ export const api = {
   // Agents
   listAgents(): Promise<AgentInfo[]> { return request('/api/agents'); },
 
+  getAgentTemplates(): Promise<AgentTemplateCatalog> {
+    return request('/api/agent-templates');
+  },
+
+  previewAgentTemplate(payload: AgentTemplatePreviewPayload): Promise<AgentTemplatePreview> {
+    return request('/api/agent-templates/preview', { method: 'POST', body: JSON.stringify(payload) });
+  },
+
   createAgent(payload: CreateAgentPayload): Promise<{ message: string; agent: AgentInfo }> {
     return request('/api/agents', { method: 'POST', body: JSON.stringify(payload) });
   },
@@ -463,10 +526,10 @@ export const api = {
   getAvailableModels(): Promise<{ models: ModelEntry[]; groups: ModelGroups }> {
     return request('/api/agents/models');
   },
-  updateAgentModel(id: string, model: string): Promise<{ message: string; model: string }> {
+  updateAgentModel(id: string, model: string, modelRoute?: ModelRouteMeta): Promise<{ message: string; model: string }> {
     return request(`/api/agents/${id}/model`, {
       method: 'PUT',
-      body: JSON.stringify({ model }),
+      body: JSON.stringify({ model, model_route: modelRoute }),
     });
   },
 

@@ -62,6 +62,15 @@ export class GatewayPage {
     }
   }
 
+  private getHttpAvailableAgents(): AgentInfo[] {
+    const occupiedAgentIds = new Set(
+      this.gateways
+        .filter(gw => gw.active && !gw.expired && gw.platform.toLowerCase() === 'http')
+        .map(gw => gw.agent_id)
+    );
+    return this.activeAgents.filter(agent => !occupiedAgentIds.has(agent.id));
+  }
+
   private render() {
     const listHtml = this.loading ? `
       <div class="gateway-list gateway-empty skeleton-block">
@@ -145,7 +154,12 @@ export class GatewayPage {
         showToast('Minimal harus ada 1 agent sebelum membuat Gateway', 'error');
         return;
       }
-      const modal = new AddGatewayModal(this.activeAgents, () => this.fetchData());
+      const availableAgents = this.getHttpAvailableAgents();
+      if (availableAgents.length === 0) {
+        showToast('Semua agent aktif sudah memiliki HTTP gateway aktif. Hapus gateway lama atau tunggu expired sebelum membuat webhook baru.', 'error', 6000);
+        return;
+      }
+      const modal = new AddGatewayModal(availableAgents, () => this.fetchData());
       modal.open();
     });
 

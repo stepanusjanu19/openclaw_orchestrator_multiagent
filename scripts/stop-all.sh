@@ -40,7 +40,7 @@ kill_port 8080 "Go Backend"
 kill_port 5173 "Vite Frontend"
 
 # ── Kill stray bot runners ────────────────────────────────────────────────────
-BOT_PIDS=$(pgrep -f "bots/agents/.*/index.js" 2>/dev/null || true)
+BOT_PIDS=$(pgrep -f "bots/shared/runner.js" 2>/dev/null || true)
 if [[ -n "$BOT_PIDS" ]]; then
   echo "$BOT_PIDS" | xargs kill 2>/dev/null || true
   ok "Bot runners dihentikan."

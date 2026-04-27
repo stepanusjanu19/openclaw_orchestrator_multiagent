@@ -9,7 +9,6 @@ import (
 	"multiagent-platform/internal/config"
 	"multiagent-platform/internal/process"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -33,10 +32,10 @@ type SubAgentInfo struct {
 
 // OrchestratorStatus adalah response dari GET /api/orchestrator/status.
 type OrchestratorStatus struct {
-	MainAgent  AgentInfo      `json:"main_agent"`
-	SubAgents  []SubAgentInfo `json:"sub_agents"`
-	TotalSubs  int            `json:"total_sub_agents"`
-	RunningCount int          `json:"running_count"`
+	MainAgent    AgentInfo      `json:"main_agent"`
+	SubAgents    []SubAgentInfo `json:"sub_agents"`
+	TotalSubs    int            `json:"total_sub_agents"`
+	RunningCount int            `json:"running_count"`
 }
 
 // GetOrchestratorStatus — GET /api/orchestrator/status
@@ -156,7 +155,7 @@ Jika tidak ada sub-agent yang sesuai → kerjakan sendiri dengan notifikasi ke u
 
 	// Resolve path SOUL.md main
 	soulPath := ResolveSoulMDPath(h.App.Cfg.OpenClawWorkspaceDir, "main")
-	if err := os.WriteFile(soulPath, []byte(orchestratorSoul), 0644); err != nil {
+	if err := writeFileNoSymlink(soulPath, []byte(orchestratorSoul)); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Gagal update SOUL.md: "+err.Error())
 		return
 	}
@@ -170,11 +169,11 @@ Jika tidak ada sub-agent yang sesuai → kerjakan sendiri dengan notifikasi ke u
 // extractRoleFromSoul membaca baris pertama yang mengandung "Role:" dari SOUL.md subagent.
 func extractRoleFromSoul(ocWorkspaceDir, agentID string) string {
 	soulPath := ResolveSoulMDPath(ocWorkspaceDir, agentID)
-	data, err := os.ReadFile(soulPath)
+	data, err := readRegularFileNoSymlink(soulPath, 2<<20)
 	if err != nil {
 		// Coba IDENTITY.md
 		identPath := filepath.Join(filepath.Dir(soulPath), "IDENTITY.md")
-		data, err = os.ReadFile(identPath)
+		data, err = readRegularFileNoSymlink(identPath, 2<<20)
 		if err != nil {
 			return ""
 		}
@@ -190,5 +189,3 @@ func extractRoleFromSoul(ocWorkspaceDir, agentID string) string {
 	}
 	return ""
 }
-
-

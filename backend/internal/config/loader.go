@@ -6,12 +6,17 @@ package config
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
+
+const maxAgentRegistryBytes int64 = 2 << 20
 
 // Config adalah konfigurasi global platform.
 type Config struct {
@@ -85,6 +90,55 @@ type AgentCred struct {
 	OpenClawModel    string
 	ProviderAPIKey   string // Optional: API key untuk provider external langsung
 	ProviderName     string // Optional: nama human-readable provider
+	ModelRouteTarget string // Optional: route_target dari model catalog/picker
+	ModelTier        string // Optional: local | cloud_proxied | cloud
+	ModelAdapterID   string // Optional: adapter/provider id
+	ModelOutbound    string // Optional: outbound model contoh dari catalog
+	ModelProviderURL string // Optional: provider base URL non-secret
+	RuntimeSupported string // Optional: true/false dari model catalog
+}
+
+type AgentRegistryLoadReport struct {
+	RegistryPath   string
+	UsedRegistry   bool
+	UsedLegacy     bool
+	MigratedLegacy bool
+	CreatedDefault bool
+	RegistryError  string
+	AgentCount     int
+}
+
+type agentRegistryFile struct {
+	Version int                           `json:"version"`
+	Agents  map[string]agentRegistryEntry `json:"agents"`
+}
+
+type agentRegistryEntry struct {
+	ID               string              `json:"id"`
+	Label            string              `json:"label"`
+	TelegramBotToken string              `json:"telegram_bot_token"`
+	OpenClawModel    string              `json:"openclaw_model"`
+	ProviderAPIKey   string              `json:"provider_api_key,omitempty"`
+	ProviderName     string              `json:"provider_name,omitempty"`
+	ModelRoute       agentModelRouteJSON `json:"model_route,omitempty"`
+}
+
+type agentModelRouteJSON struct {
+	RouteTarget      string `json:"route_target,omitempty"`
+	Tier             string `json:"tier,omitempty"`
+	AdapterID        string `json:"adapter_id,omitempty"`
+	OutboundModel    string `json:"outbound_model,omitempty"`
+	ProviderBaseURL  string `json:"provider_base_url,omitempty"`
+	RuntimeSupported string `json:"runtime_supported,omitempty"`
+}
+
+var validAgentIDPattern = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
+var configSecretPattern = regexp.MustCompile(`(?i)(authorization|api[_-]?key|access[_-]?token|auth[_-]?token|gateway[_-]?token|password|secret|telegram[_-]?bot[_-]?token)(["'\s:=]+)([^"',\s}]+)`)
+var telegramTokenPattern = regexp.MustCompile(`\b\d{6,12}:[A-Za-z0-9_-]{30,}\b`)
+
+func redactConfigSecret(value string) string {
+	value = telegramTokenPattern.ReplaceAllString(value, "[REDACTED_TELEGRAM_TOKEN]")
+	return configSecretPattern.ReplaceAllString(value, "$1$2[REDACTED]")
 }
 
 // Load membaca .env dari direktori credentials.
@@ -145,51 +199,106 @@ func Load(credentialsDir string) (*Config, error) {
 	return cfg, nil
 }
 
-// WriteAgentCred menulis file .env untuk agent baru ke credentials/agents/<id>.env
+func AgentRegistryPath(credentialsDir string) string {
+	return filepath.Join(credentialsDir, "agents.json")
+}
+
+// WriteAgentCred menyimpan credential agent ke credentials/agents.json.
 func WriteAgentCred(credentialsDir string, cred *AgentCred) error {
-	agentsDir := filepath.Join(credentialsDir, "agents")
-	if err := os.MkdirAll(agentsDir, 0755); err != nil {
-		return fmt.Errorf("gagal buat direktori agents: %w", err)
+	if cred == nil {
+		return fmt.Errorf("credential agent kosong")
 	}
-
-	// Security Enhancement: Strip newlines to prevent Env Injection Attacks
-	sanitizeEnv := func(val string) string {
-		val = strings.ReplaceAll(val, "\n", " ")
-		val = strings.ReplaceAll(val, "\r", " ")
-		return strings.TrimSpace(val)
+	normalized, err := normalizeAgentCred(cred)
+	if err != nil {
+		return err
 	}
-
-	envPath := filepath.Join(agentsDir, cred.ID+".env")
-	content := fmt.Sprintf(`# Agent: %s
-AGENT_ID=%s
-AGENT_LABEL=%s
-TELEGRAM_BOT_TOKEN=%s
-OPENCLAW_MODEL=%s
-PROVIDER_API_KEY=%s
-PROVIDER_NAME=%s
-`,
-		sanitizeEnv(cred.Label),
-		sanitizeEnv(cred.ID),
-		sanitizeEnv(cred.Label),
-		sanitizeEnv(cred.TelegramBotToken),
-		sanitizeEnv(cred.OpenClawModel),
-		sanitizeEnv(cred.ProviderAPIKey),
-		sanitizeEnv(cred.ProviderName))
-
-	return os.WriteFile(envPath, []byte(content), 0600)
+	registry, err := readAgentRegistryFile(credentialsDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("gagal baca registry agent: %w", err)
+		}
+		registry = newAgentRegistryFile()
+	}
+	registry.Agents[normalized.ID] = agentCredToRegistryEntry(normalized)
+	return writeAgentRegistryFile(credentialsDir, registry)
 }
 
-// DeleteAgentCred menghapus file .env agent dari credentials/agents/<id>.env
+// DeleteAgentCred menghapus agent dari credentials/agents.json.
 func DeleteAgentCred(credentialsDir, agentID string) error {
-	envPath := filepath.Join(credentialsDir, "agents", agentID+".env")
-	return os.Remove(envPath)
+	agentID = strings.ToLower(strings.TrimSpace(agentID))
+	if !validAgentIDPattern.MatchString(agentID) {
+		return fmt.Errorf("agent id tidak valid")
+	}
+	registry, err := readAgentRegistryFile(credentialsDir)
+	if err != nil {
+		return err
+	}
+	delete(registry.Agents, agentID)
+	return writeAgentRegistryFile(credentialsDir, registry)
 }
 
-// LoadAgentCreds membaca semua file .env di credentials/agents/
+// LoadAgentCreds membaca credentials/agents.json dengan fallback legacy .env.
 func LoadAgentCreds(credentialsDir string) (map[string]*AgentCred, error) {
+	creds, _, err := LoadAgentCredsWithReport(credentialsDir)
+	return creds, err
+}
+
+func LoadAgentCredsWithReport(credentialsDir string) (map[string]*AgentCred, AgentRegistryLoadReport, error) {
+	report := AgentRegistryLoadReport{RegistryPath: AgentRegistryPath(credentialsDir)}
+	registry, err := readAgentRegistryFile(credentialsDir)
+	if err == nil {
+		creds := registryToAgentCreds(registry)
+		report.UsedRegistry = true
+		report.AgentCount = len(creds)
+		return creds, report, nil
+	}
+
+	if err != nil && !os.IsNotExist(err) {
+		report.RegistryError = redactConfigSecret(err.Error())
+		fmt.Printf("⚠️  Gagal baca registry agent %s: %v. Fallback ke legacy .env.\n", report.RegistryPath, redactConfigSecret(err.Error()))
+	}
+
+	legacyCreds, legacyErr := loadLegacyAgentCreds(credentialsDir)
+	if legacyErr != nil && !os.IsNotExist(legacyErr) {
+		return nil, report, legacyErr
+	}
+	if len(legacyCreds) > 0 {
+		report.UsedLegacy = true
+		report.AgentCount = len(legacyCreds)
+		if os.IsNotExist(err) {
+			migratedRegistry := agentCredsToRegistry(legacyCreds)
+			if writeErr := writeAgentRegistryFile(credentialsDir, migratedRegistry); writeErr != nil {
+				return legacyCreds, report, fmt.Errorf("gagal migrasi legacy agent credentials: %w", writeErr)
+			}
+			report.MigratedLegacy = true
+			report.UsedRegistry = true
+			return registryToAgentCreds(migratedRegistry), report, nil
+		}
+		return legacyCreds, report, nil
+	}
+
+	if os.IsNotExist(err) {
+		mainCred := &AgentCred{ID: "main", Label: "main", OpenClawModel: "openclaw/main"}
+		defaultCreds := map[string]*AgentCred{"main": mainCred}
+		if writeErr := writeAgentRegistryFile(credentialsDir, agentCredsToRegistry(defaultCreds)); writeErr != nil {
+			return nil, report, fmt.Errorf("gagal buat registry default: %w", writeErr)
+		}
+		report.CreatedDefault = true
+		report.UsedRegistry = true
+		report.AgentCount = 1
+		return defaultCreds, report, nil
+	}
+
+	return map[string]*AgentCred{}, report, nil
+}
+
+func loadLegacyAgentCreds(credentialsDir string) (map[string]*AgentCred, error) {
 	agentsDir := filepath.Join(credentialsDir, "agents")
 	entries, err := os.ReadDir(agentsDir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("gagal baca direktori agents: %w", err)
 	}
 
@@ -203,21 +312,240 @@ func LoadAgentCreds(credentialsDir string) (map[string]*AgentCred, error) {
 		envPath := filepath.Join(agentsDir, entry.Name())
 		envMap, err := parseEnvFile(envPath)
 		if err != nil {
-			fmt.Printf("⚠️  Gagal baca %s: %v\n", envPath, err)
+			fmt.Printf("⚠️  Gagal baca %s: %v\n", envPath, redactConfigSecret(err.Error()))
 			continue
 		}
 
-		creds[agentID] = &AgentCred{
+		cred, err := normalizeAgentCred(&AgentCred{
 			ID:               getEnv(envMap, "AGENT_ID", agentID),
 			Label:            getEnv(envMap, "AGENT_LABEL", agentID),
 			TelegramBotToken: getEnv(envMap, "TELEGRAM_BOT_TOKEN", ""),
 			OpenClawModel:    getEnv(envMap, "OPENCLAW_MODEL", "openclaw/"+agentID),
 			ProviderAPIKey:   getEnv(envMap, "PROVIDER_API_KEY", ""),
 			ProviderName:     getEnv(envMap, "PROVIDER_NAME", ""),
+			ModelRouteTarget: getEnv(envMap, "MODEL_ROUTE_TARGET", ""),
+			ModelTier:        getEnv(envMap, "MODEL_TIER", ""),
+			ModelAdapterID:   getEnv(envMap, "MODEL_ADAPTER_ID", ""),
+			ModelOutbound:    getEnv(envMap, "MODEL_OUTBOUND", ""),
+			ModelProviderURL: getEnv(envMap, "MODEL_PROVIDER_BASE_URL", ""),
+			RuntimeSupported: getEnv(envMap, "MODEL_RUNTIME_SUPPORTED", ""),
+		})
+		if err != nil {
+			fmt.Printf("⚠️  Skip legacy agent %s: %v\n", envPath, redactConfigSecret(err.Error()))
+			continue
 		}
+		creds[cred.ID] = cred
 	}
 
 	return creds, nil
+}
+
+func newAgentRegistryFile() *agentRegistryFile {
+	return &agentRegistryFile{Version: 1, Agents: map[string]agentRegistryEntry{}}
+}
+
+func readAgentRegistryFile(credentialsDir string) (*agentRegistryFile, error) {
+	path := AgentRegistryPath(credentialsDir)
+	st, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("agent registry bukan regular file")
+	}
+	if st.Size() > maxAgentRegistryBytes {
+		return nil, fmt.Errorf("agent registry terlalu besar")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxAgentRegistryBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxAgentRegistryBytes {
+		return nil, fmt.Errorf("agent registry terlalu besar")
+	}
+	var registry agentRegistryFile
+	if err := json.Unmarshal(data, &registry); err != nil {
+		return nil, err
+	}
+	if registry.Version == 0 {
+		registry.Version = 1
+	}
+	if registry.Agents == nil {
+		registry.Agents = map[string]agentRegistryEntry{}
+	}
+	return &registry, nil
+}
+
+func writeAgentRegistryFile(credentialsDir string, registry *agentRegistryFile) error {
+	if registry == nil {
+		registry = newAgentRegistryFile()
+	}
+	if registry.Version == 0 {
+		registry.Version = 1
+	}
+	if registry.Agents == nil {
+		registry.Agents = map[string]agentRegistryEntry{}
+	}
+	if err := os.MkdirAll(credentialsDir, 0700); err != nil {
+		return fmt.Errorf("gagal buat direktori credentials: %w", err)
+	}
+	if st, err := os.Lstat(credentialsDir); err != nil {
+		return err
+	} else if st.Mode()&os.ModeSymlink != 0 || !st.IsDir() {
+		return fmt.Errorf("credentials dir tidak valid")
+	}
+	if err := os.Chmod(credentialsDir, 0700); err != nil {
+		return fmt.Errorf("gagal set permission credentials: %w", err)
+	}
+
+	clean := newAgentRegistryFile()
+	for id, entry := range registry.Agents {
+		cred := registryEntryToAgentCred(id, entry)
+		normalized, err := normalizeAgentCred(cred)
+		if err != nil {
+			return err
+		}
+		clean.Agents[normalized.ID] = agentCredToRegistryEntry(normalized)
+	}
+
+	data, err := json.MarshalIndent(clean, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+
+	tmp, err := os.CreateTemp(credentialsDir, ".agents.json.tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, AgentRegistryPath(credentialsDir))
+}
+
+func agentCredsToRegistry(creds map[string]*AgentCred) *agentRegistryFile {
+	registry := newAgentRegistryFile()
+	for id, cred := range creds {
+		if cred == nil {
+			continue
+		}
+		if strings.TrimSpace(cred.ID) == "" {
+			cred.ID = id
+		}
+		if normalized, err := normalizeAgentCred(cred); err == nil {
+			registry.Agents[normalized.ID] = agentCredToRegistryEntry(normalized)
+		}
+	}
+	return registry
+}
+
+func registryToAgentCreds(registry *agentRegistryFile) map[string]*AgentCred {
+	creds := map[string]*AgentCred{}
+	if registry == nil {
+		return creds
+	}
+	for id, entry := range registry.Agents {
+		cred := registryEntryToAgentCred(id, entry)
+		normalized, err := normalizeAgentCred(cred)
+		if err != nil {
+			fmt.Printf("⚠️  Skip agent registry entry %s: %v\n", id, redactConfigSecret(err.Error()))
+			continue
+		}
+		creds[normalized.ID] = normalized
+	}
+	return creds
+}
+
+func registryEntryToAgentCred(id string, entry agentRegistryEntry) *AgentCred {
+	agentID := strings.TrimSpace(entry.ID)
+	if agentID == "" {
+		agentID = id
+	}
+	return &AgentCred{
+		ID:               agentID,
+		Label:            entry.Label,
+		TelegramBotToken: entry.TelegramBotToken,
+		OpenClawModel:    entry.OpenClawModel,
+		ProviderAPIKey:   entry.ProviderAPIKey,
+		ProviderName:     entry.ProviderName,
+		ModelRouteTarget: entry.ModelRoute.RouteTarget,
+		ModelTier:        entry.ModelRoute.Tier,
+		ModelAdapterID:   entry.ModelRoute.AdapterID,
+		ModelOutbound:    entry.ModelRoute.OutboundModel,
+		ModelProviderURL: entry.ModelRoute.ProviderBaseURL,
+		RuntimeSupported: entry.ModelRoute.RuntimeSupported,
+	}
+}
+
+func agentCredToRegistryEntry(cred *AgentCred) agentRegistryEntry {
+	return agentRegistryEntry{
+		ID:               cred.ID,
+		Label:            cred.Label,
+		TelegramBotToken: cred.TelegramBotToken,
+		OpenClawModel:    cred.OpenClawModel,
+		ProviderAPIKey:   cred.ProviderAPIKey,
+		ProviderName:     cred.ProviderName,
+		ModelRoute: agentModelRouteJSON{
+			RouteTarget:      cred.ModelRouteTarget,
+			Tier:             cred.ModelTier,
+			AdapterID:        cred.ModelAdapterID,
+			OutboundModel:    cred.ModelOutbound,
+			ProviderBaseURL:  cred.ModelProviderURL,
+			RuntimeSupported: cred.RuntimeSupported,
+		},
+	}
+}
+
+func normalizeAgentCred(cred *AgentCred) (*AgentCred, error) {
+	if cred == nil {
+		return nil, fmt.Errorf("credential agent kosong")
+	}
+	clean := *cred
+	clean.ID = strings.ToLower(sanitizeCredentialString(clean.ID))
+	if !validAgentIDPattern.MatchString(clean.ID) {
+		return nil, fmt.Errorf("agent id tidak valid")
+	}
+	clean.Label = sanitizeCredentialString(clean.Label)
+	if clean.Label == "" {
+		clean.Label = clean.ID
+	}
+	clean.TelegramBotToken = sanitizeCredentialString(clean.TelegramBotToken)
+	clean.OpenClawModel = sanitizeCredentialString(clean.OpenClawModel)
+	if clean.OpenClawModel == "" {
+		clean.OpenClawModel = "openclaw/" + clean.ID
+	}
+	clean.ProviderAPIKey = sanitizeCredentialString(clean.ProviderAPIKey)
+	clean.ProviderName = sanitizeCredentialString(clean.ProviderName)
+	clean.ModelRouteTarget = sanitizeCredentialString(clean.ModelRouteTarget)
+	clean.ModelTier = sanitizeCredentialString(clean.ModelTier)
+	clean.ModelAdapterID = sanitizeCredentialString(clean.ModelAdapterID)
+	clean.ModelOutbound = sanitizeCredentialString(clean.ModelOutbound)
+	clean.ModelProviderURL = sanitizeCredentialString(clean.ModelProviderURL)
+	clean.RuntimeSupported = sanitizeCredentialString(clean.RuntimeSupported)
+	return &clean, nil
+}
+
+func sanitizeCredentialString(val string) string {
+	val = strings.ReplaceAll(val, "\n", " ")
+	val = strings.ReplaceAll(val, "\r", " ")
+	val = strings.ReplaceAll(val, "\x00", "")
+	return strings.TrimSpace(val)
 }
 
 // parseEnvFile membaca file .env ke map key→value.

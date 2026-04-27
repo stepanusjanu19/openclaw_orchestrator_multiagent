@@ -38,14 +38,26 @@ func (r *agentRegistry) get() map[string]*config.AgentCred {
 	// Return shallow copy to avoid external mutation
 	copy := make(map[string]*config.AgentCred, len(r.creds))
 	for k, v := range r.creds {
-		copy[k] = v
+		if v == nil {
+			continue
+		}
+		credCopy := *v
+		copy[k] = &credCopy
 	}
 	return copy
 }
 
 func (r *agentRegistry) set(creds map[string]*config.AgentCred) {
 	r.mu.Lock()
-	r.creds = creds
+	clean := make(map[string]*config.AgentCred, len(creds))
+	for k, v := range creds {
+		if v == nil {
+			continue
+		}
+		credCopy := *v
+		clean[k] = &credCopy
+	}
+	r.creds = clean
 	r.mu.Unlock()
 }
 
@@ -57,6 +69,40 @@ func (r *agentRegistry) ids() []string {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+func auditAgentRegistryLoad(securityMgr *security.Manager, report config.AgentRegistryLoadReport) {
+	if securityMgr == nil {
+		return
+	}
+	status := "loaded"
+	level := "INFO"
+	if report.MigratedLegacy {
+		status = "migrated"
+	}
+	if report.CreatedDefault {
+		status = "default_created"
+	}
+	if report.RegistryError != "" {
+		status = "legacy_fallback"
+		level = "ERROR"
+	}
+	securityMgr.EnqueueAudit(security.AuditEvent{
+		Level:   level,
+		Channel: "agent_registry",
+		Status:  status,
+		Message: "agent registry load",
+		Metadata: map[string]interface{}{
+			"registry_path":    report.RegistryPath,
+			"used_registry":    report.UsedRegistry,
+			"used_legacy":      report.UsedLegacy,
+			"migrated_legacy":  report.MigratedLegacy,
+			"created_default":  report.CreatedDefault,
+			"agent_count":      report.AgentCount,
+			"registry_error":   security.MaskKnownSecrets(report.RegistryError),
+			"registry_version": 1,
+		},
+	})
 }
 
 func main() {
@@ -72,11 +118,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("❌ Gagal load config: %v", err)
 	}
+	if strings.TrimSpace(cfg.GatewayToken) != "" {
+		os.Setenv("OPENCLAW_GW_TOKEN", cfg.GatewayToken)
+		os.Setenv("OPENCLAW_GATEWAY_TOKEN", cfg.GatewayToken)
+	}
 
-	initialCreds, err := config.LoadAgentCreds(*credDir)
+	initialCreds, initialRegistryReport, err := config.LoadAgentCredsWithReport(*credDir)
 	if err != nil {
 		log.Printf("⚠️  Gagal load agent credentials: %v", err)
-		initialCreds = make(map[string]*config.AgentCred)
+		if initialCreds == nil {
+			initialCreds = make(map[string]*config.AgentCred)
+		}
 	}
 
 	if len(initialCreds) == 0 {
@@ -101,20 +153,6 @@ func main() {
 
 	registry := &agentRegistry{creds: initialCreds}
 
-	// ── Feature: Secure Hot Reload Watcher ────────────────────────────────────
-	// Melakukan polling perubahan file .env setiap 5 detik.
-	// Aman dari Race-Condition: Mutex Write-Lock terjamin dalam agentRegistry.set()
-	// Aman dari I/O Exhaustion: Interval 5 detik sangat ringan.
-	go func() {
-		for {
-			time.Sleep(5 * time.Second)
-			hotCreds, err := config.LoadAgentCreds(*credDir)
-			if err == nil {
-				registry.set(hotCreds)
-			}
-		}
-	}()
-
 	sessions := auth.NewSessionStore(cfg.DashboardPassword)
 	backendURL := fmt.Sprintf("http://%s:%s", cfg.APIHost, cfg.APIPort)
 	mgr := process.NewManager(cfg, internalRPCToken, backendURL, internalToolToken)
@@ -128,6 +166,24 @@ func main() {
 	} else {
 		log.Printf("ℹ️  Visitor PostgreSQL store disabled/unavailable; gateway audit metadata still works")
 	}
+	auditAgentRegistryLoad(securityMgr, initialRegistryReport)
+
+	// ── Feature: Secure Hot Reload Watcher ────────────────────────────────────
+	// Melakukan polling perubahan registry JSON setiap 5 detik.
+	// Aman dari Race-Condition: Mutex Write-Lock terjamin dalam agentRegistry.set()
+	// Aman dari I/O Exhaustion: Interval 5 detik sangat ringan.
+	go func() {
+		for {
+			time.Sleep(5 * time.Second)
+			hotCreds, report, err := config.LoadAgentCredsWithReport(*credDir)
+			if err == nil || hotCreds != nil {
+				registry.set(hotCreds)
+				if report.MigratedLegacy || report.CreatedDefault || report.RegistryError != "" {
+					auditAgentRegistryLoad(securityMgr, report)
+				}
+			}
+		}
+	}()
 
 	appState := &handlers.App{
 		Cfg:              cfg,
@@ -271,6 +327,13 @@ func main() {
 	})
 
 	// ── Agent routes ──────────────────────────────────────────────────────────
+	mux.HandleFunc("/api/agent-templates", func(w http.ResponseWriter, r *http.Request) {
+		agentsH.ListAgentTemplates(w, r)
+	})
+	mux.HandleFunc("/api/agent-templates/preview", func(w http.ResponseWriter, r *http.Request) {
+		agentsH.PreviewAgentTemplate(w, r)
+	})
+
 	// GET /api/agents/models — harus didahulukan sebelum /api/agents/ wildcard
 	mux.HandleFunc("/api/agents/models", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {

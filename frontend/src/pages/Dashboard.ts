@@ -2,12 +2,14 @@
 // List view yang scalable — semua agent dalam tabel yang bisa expand.
 // Dynamic: tambah/hapus agent langsung dari UI tanpa reload.
 
-import { api, API_BASE, type AgentInfo, type OCStatus, type DetectedAgent, type ModelGroups, type DaemonStatus, type OrchestratorStatus, type ProviderStatus, type SystemMetrics } from '../api/client.js';
+import { api, API_BASE, type AgentInfo, type OCStatus, type DetectedAgent, type DaemonStatus, type OrchestratorStatus, type ProviderStatus, type SystemMetrics } from '../api/client.js';
 import { AddAgentModal } from '../components/AddAgentModal.js';
 import { LogViewer } from '../components/LogViewer.js';
+import { ModelPicker } from '../components/ModelPicker.js';
 import { WorkspaceEditor } from '../components/WorkspaceEditor.js';
 import { showToast } from '../components/Toast.js';
 import { escapeHTML } from '../utils/dom.js';
+import { flattenModelGroups, modelRouteMetaFromEntry, routerModelsToEntries } from '../utils/modelRuntime.js';
 
 const AVATARS: Record<string, string> = { main: 'M', dev: 'D', alpha: 'A', assistant: 'AI', bot: 'B' };
 const avatar = (id: string) => AVATARS[id] ?? id.charAt(0).toUpperCase();
@@ -477,7 +479,7 @@ export class Dashboard {
           // Secara otomatis reload daemon tanpa mengganggu runtime!
           await api.reloadDaemonConfig().catch(() => {});
           
-          showToast(`✅ ${res.message} (Daemon Reloaded)`, 'success');
+          showToast(`✅ ${res.message} (config reloaded). Restart agent yang sedang running agar env runtime ikut segar.`, 'success');
           input.value = '';
           await this.loadProviders();
         } catch (err: unknown) {
@@ -714,7 +716,7 @@ export class Dashboard {
     if (!info.has_token) {
       const warn = document.createElement('div');
       warn.className = 'no-token-banner';
-      warn.innerHTML = `⚠️ Token Telegram belum dikonfigurasi — edit <code>credentials/agents/${escapeHTML(info.id)}.env</code> atau hapus dan buat ulang via dashboard`;
+      warn.innerHTML = `⚠️ Token Telegram belum dikonfigurasi — edit <code>credentials/agents.json</code> untuk agent <code>${escapeHTML(info.id)}</code> atau hapus dan buat ulang via dashboard`;
       detail.appendChild(warn);
     }
 
@@ -731,6 +733,9 @@ export class Dashboard {
     const running = info.status.running;
     const pid = info.status.pid;
     const startedAt = info.status.started_at ? new Date(info.status.started_at).toLocaleTimeString('id-ID') : '—';
+    const runtimeWarning = info.status.runtime_stale
+      ? escapeHTML(info.status.runtime_warning || 'Agent runtime stale, restart agent.')
+      : '';
     const cleanId = escapeHTML(info.id);
     const cleanLabel = escapeHTML(info.label);
     const cleanModel = escapeHTML(info.model);
@@ -753,6 +758,7 @@ export class Dashboard {
           <span class="dot"></span>${running ? 'Running' : 'Stopped'}
         </span>
         ${running ? `<span style="font-size:0.7rem;color:var(--clr-text-muted);margin-left:6px">${startedAt}</span>` : ''}
+        ${runtimeWarning ? `<span class="token-warn-badge" title="${runtimeWarning}" style="margin-left:6px">stale</span>` : ''}
       </div>
       <div class="col-pid" style="font-family:var(--font-mono);font-size:0.8rem;color:var(--clr-text-muted)">${running && pid ? pid : '—'}</div>
       <div class="col-actions">
@@ -858,7 +864,7 @@ export class Dashboard {
   }
 
   private async handleDelete(agentId: string, label: string) {
-    const confirmed = window.confirm(`Hapus agen "${label}" (${agentId}) sepenuhnya?\n\nPerhatian: Tindakan ini akan MENGHAPUS seluruh file yang berkaitan:\n- Profil (credentials/agents/${agentId}.env)\n- Persona (Workspace SOUL.md)\n- Registri Endpoint (bots/agents/${agentId})`);
+    const confirmed = window.confirm(`Hapus agen "${label}" (${agentId}) sepenuhnya?\n\nPerhatian: Tindakan ini akan MENGHAPUS seluruh file yang berkaitan:\n- Profil registry (credentials/agents.json)\n- Persona (Workspace SOUL.md)\n- Registrasi OpenClaw agent`);
     if (!confirmed) return;
 
     try {
@@ -879,41 +885,31 @@ export class Dashboard {
   }
 
   private async handleUpdateModel(agentId: string, currentModel: string) {
-    // Fetch grouped models
-    let groups: ModelGroups = { cloud: [], cloud_proxied: [], local: [] };
+    const picker = new ModelPicker({
+      currentModel,
+      manualPlaceholder: 'provider/model-id, contoh: openrouter/nvidia/model:free',
+      emptyLabel: 'Pilih dari katalog atau tulis manual untuk provider/model yang belum muncul.',
+    });
+
     try {
       const res = await api.getAvailableModels();
-      groups = res.groups || groups;
+      const groups = res.groups || { cloud: [], cloud_proxied: [], local: [] };
+      const routerStatus = await api.getRouterStatus().catch(() => null);
+      picker.setModels([
+        ...flattenModelGroups(groups),
+        ...routerModelsToEntries(routerStatus),
+      ]);
     } catch { /* silent */ }
-
-    const buildOptgroups = (g: ModelGroups): string => {
-      const renderGroup = (label: string, items: typeof g.cloud) =>
-        (items && items.length) ? `<optgroup label="${label}">${items.map(m => {
-          const keyIcon = m.has_api_key ? ' 🔑' : '';
-          const optLabel = `${m.label}${keyIcon}  [${m.provider}]`;
-          return `<option value="${escapeHTML(m.id)}"${m.id === currentModel ? ' selected' : ''}>${escapeHTML(optLabel)}</option>`;
-        }).join('')}</optgroup>` : '';
-      return [
-        renderGroup('☁️ Cloud', g.cloud),
-        renderGroup('☁️ Cloud Proxied (via local bridge)', g.cloud_proxied),
-        renderGroup('🖥️ Local', g.local),
-      ].join('');
-    };
 
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9999;display:flex;align-items:center;justify-content:center;';
     const dialog = document.createElement('div');
-    dialog.style.cssText = 'background:var(--clr-surface);border:1px solid var(--clr-border);border-radius:var(--radius-lg);padding:24px;min-width:380px;max-width:500px;box-shadow:0 20px 60px rgba(0,0,0,0.5);';
+    dialog.style.cssText = 'background:var(--clr-surface);border:1px solid var(--clr-border);border-radius:var(--radius-lg);padding:24px;width:min(760px,92vw);max-height:86vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,0.5);';
     dialog.innerHTML = `
       <h3 style="margin:0 0 6px;font-size:1rem;">🔄 Ganti Model — <code style="font-size:0.85rem">${escapeHTML(agentId)}</code></h3>
       <p style="font-size:0.78rem;color:var(--clr-text-muted);margin-bottom:16px;">Saat ini: <strong>${escapeHTML(currentModel || '(default)')}</strong></p>
-      <div style="margin-bottom:12px;">
+      <div id="model-picker-mount" style="margin-bottom:12px;">
         <label style="font-size:0.8rem;color:var(--clr-text-2);margin-bottom:6px;display:block;">Model Baru</label>
-        <select id="model-picker-select" class="form-input font-mono" style="width:100%;height:40px;">
-          <option value="">— Pilih model —</option>
-          ${buildOptgroups(groups)}
-        </select>
-        <span style="font-size:0.72rem;color:var(--clr-text-muted);margin-top:4px;display:block;">Model dikelompokkan: Cloud / Cloud Proxied / Local.</span>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px;">
         <button id="model-picker-cancel" class="btn btn-ghost">Batal</button>
@@ -923,21 +919,21 @@ export class Dashboard {
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
 
-    const select = dialog.querySelector<HTMLSelectElement>('#model-picker-select')!;
-    setTimeout(() => select.focus(), 80);
+    dialog.querySelector<HTMLDivElement>('#model-picker-mount')!.appendChild(picker.getElement());
+    setTimeout(() => picker.focus(), 80);
 
     const cleanup = () => overlay.remove();
     overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(); });
     dialog.querySelector('#model-picker-cancel')!.addEventListener('click', cleanup);
     dialog.querySelector('#model-picker-save')!.addEventListener('click', async () => {
-      const newModel = select.value.trim();
+      const newModel = picker.getValue().trim();
       if (!newModel) { showToast('Pilih model terlebih dahulu', 'error'); return; }
       if (newModel === currentModel) { cleanup(); return; }
-      const saveBtn = dialog.querySelector<HTMLButtonElement>('#model-picker-save')!;
-      saveBtn.disabled = true; saveBtn.textContent = '⏳ Menyimpan...';
-      try {
-        await api.updateAgentModel(agentId, newModel);
-        showToast(`✅ Model "${agentId}" → ${newModel}`, 'success');
+	      const saveBtn = dialog.querySelector<HTMLButtonElement>('#model-picker-save')!;
+	      saveBtn.disabled = true; saveBtn.textContent = '⏳ Menyimpan...';
+	      try {
+	        await api.updateAgentModel(agentId, newModel, modelRouteMetaFromEntry(picker.getSelectedModel()));
+	        showToast(`✅ Model "${agentId}" → ${newModel}`, 'success');
         cleanup();
         await this.loadAgents();
       } catch (err: unknown) {

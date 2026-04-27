@@ -4,9 +4,7 @@
   "description": "OpenClaw multi-agent Telegram bot runners",
   "type": "module",
   "scripts": {
-    "start:main": "node agents/main/index.js",
-    "start:dev": "node agents/dev/index.js",
-    "start:alpha": "node agents/alpha/index.js"
+    "start:runner": "node shared/runner.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

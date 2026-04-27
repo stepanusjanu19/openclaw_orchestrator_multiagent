@@ -84,7 +84,7 @@ echo "════════════════════════�
 echo "  ✅ Setup selesai!"
 echo ""
 echo "  Next steps:"
-echo "  1. Edit credentials/agents/*.env — isi TELEGRAM_BOT_TOKEN"
+echo "  1. Edit credentials/agents.json — isi telegram_bot_token"
 echo "  2. Jalankan: bash scripts/start-all.sh"
 echo "  3. Buka dashboard: http://localhost:5173"
 echo "═══════════════════════════════════════════════════"

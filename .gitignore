@@ -2,6 +2,7 @@
 # SECURITY: credentials selalu diexclude dari git
 # ═══════════════════════════════════════════════════
 credentials/.env
+credentials/agents.json
 credentials/gateways.json
 credentials/userbot.session
 credentials/agents

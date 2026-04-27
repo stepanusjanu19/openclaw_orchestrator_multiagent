@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -759,12 +760,93 @@ func UnregisterAgentFromOCConfig(ocDir string, agentID string) error {
 
 // ModelEntry merepresentasikan satu model dengan metadata klasifikasi tier-nya.
 type ModelEntry struct {
-	ID        string `json:"id"`          // full ID: "ollama/kimi-k2.5:cloud"
-	Label     string `json:"label"`       // short: "kimi-k2.5:cloud"
-	Provider  string `json:"provider"`    // "ollama"
-	Tier      string `json:"tier"`        // "local" | "cloud_proxied" | "cloud"
-	TierLabel string `json:"tier_label"`  // "🖥️ Local" | "☁️ Cloud Proxied" | "☁️ Cloud"
-	HasAPIKey bool   `json:"has_api_key"` // indikator apakah ada API key riil
+	ID                   string   `json:"id"`                               // full ID: "ollama/kimi-k2.5:cloud"
+	Label                string   `json:"label"`                            // short: "kimi-k2.5:cloud"
+	Provider             string   `json:"provider"`                         // "ollama"
+	Tier                 string   `json:"tier"`                             // "local" | "cloud_proxied" | "cloud"
+	TierLabel            string   `json:"tier_label"`                       // "🖥️ Local" | "☁️ Cloud Proxied" | "☁️ Cloud"
+	HasAPIKey            bool     `json:"has_api_key"`                      // indikator apakah ada API key riil
+	RouteTarget          string   `json:"route_target"`                     // "openclaw_gateway" | "ai_router"
+	RuntimeSupported     bool     `json:"runtime_supported"`                // false jika provider butuh setup sebelum runtime
+	AdapterID            string   `json:"adapter_id,omitempty"`             // adapter runtime non-secret
+	CanonicalModel       string   `json:"canonical_model,omitempty"`        // model ref OpenClaw provider/model
+	OutboundModelExample string   `json:"outbound_model_example,omitempty"` // contoh model outbound untuk route target
+	ProviderBaseURL      string   `json:"provider_base_url,omitempty"`      // base URL non-secret untuk routing direct/local
+	ProviderDocsURL      string   `json:"provider_docs_url,omitempty"`      // URL dokumentasi provider
+	RuntimeNotes         []string `json:"runtime_notes,omitempty"`          // catatan runtime non-secret
+	Warnings             []string `json:"warnings,omitempty"`               // diagnostik non-secret untuk UI
+}
+
+type providerAdapterMeta struct {
+	ID              string
+	ProviderDocsURL string
+	RuntimeNotes    []string
+}
+
+var providerAdapterRegistry = map[string]providerAdapterMeta{
+	"openclaw": {
+		ID:              "openclaw",
+		ProviderDocsURL: "https://docs.openclaw.ai/concepts/model-providers",
+		RuntimeNotes:    []string{"OpenClaw Gateway canonical: kirim provider/model apa adanya ke gateway."},
+	},
+	"openrouter": {
+		ID:              "openrouter",
+		ProviderDocsURL: "https://openrouter.ai/docs/api-reference/chat-completion",
+		RuntimeNotes:    []string{"OpenClaw Gateway memakai openrouter/<provider>/<model>; direct OpenRouter memakai <provider>/<model>."},
+	},
+	"openai": {
+		ID:              "openai",
+		ProviderDocsURL: "https://platform.openai.com/docs/api-reference/chat/create-chat-completion",
+		RuntimeNotes:    []string{"Direct OpenAI-compatible route memakai model id native tanpa prefix openai/."},
+	},
+	"anthropic": {
+		ID:              "anthropic",
+		ProviderDocsURL: "https://docs.anthropic.com/en/api/messages-examples",
+		RuntimeNotes:    []string{"Anthropic native Messages API tidak dipanggil langsung oleh runtime V1."},
+	},
+	"google": {
+		ID:              "google",
+		ProviderDocsURL: "https://ai.google.dev/gemini-api/docs/openai",
+		RuntimeNotes:    []string{"Gemini OpenAI compatibility memakai model id native tanpa prefix google/."},
+	},
+	"xai": {
+		ID:              "xai",
+		ProviderDocsURL: "https://docs.x.ai/docs/api-reference",
+		RuntimeNotes:    []string{"xAI direct route bersifat OpenAI-compatible dan memakai model id native."},
+	},
+	"ollama": {
+		ID:              "ollama",
+		ProviderDocsURL: "https://docs.ollama.com/openai",
+		RuntimeNotes:    []string{"Ollama direct bypass memakai nama model lokal tanpa prefix ollama/."},
+	},
+	"llamacpp": {
+		ID:              "llamacpp",
+		ProviderDocsURL: "https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md",
+		RuntimeNotes:    []string{"llama.cpp server menyediakan endpoint OpenAI-compatible lokal."},
+	},
+}
+
+func providerAdapter(provider string) providerAdapterMeta {
+	normalized := strings.ToLower(strings.TrimSpace(provider))
+	if meta, ok := providerAdapterRegistry[normalized]; ok {
+		return meta
+	}
+	return providerAdapterMeta{
+		ID:              normalized,
+		ProviderDocsURL: "",
+		RuntimeNotes:    []string{"Provider belum memiliki adapter metadata eksplisit."},
+	}
+}
+
+func outboundModelExample(routeTarget, fullID, modelID string) string {
+	switch routeTarget {
+	case "ai_router", "openclaw_gateway":
+		return fullID
+	case "ollama_direct", "direct_openrouter", "direct_openai", "direct_google", "direct_xai", "direct_llamacpp":
+		return modelID
+	default:
+		return fullID
+	}
 }
 
 // classifyModel menentukan tier dengan mengecek langsung baseUrl dan API Key di config.
@@ -773,7 +855,7 @@ func classifyModel(provider, modelID, apiKey, baseUrl string) (tier, tierLabel s
 
 	apiKey = strings.TrimSpace(apiKey)
 	// Anggap punya API key jika string apiKey tidak kosong dan bukan variabel dummy (mengandung nama provider/dummy)
-	hasApiKey = apiKey != "" && apiKey != "OLLAMA_API_KEY" && !strings.Contains(strings.ToLower(apiKey), "dummy")
+	hasApiKey = apiKey != "" && !isPlaceholderSecret(apiKey)
 
 	baseUrlLower := strings.ToLower(baseUrl)
 	isLocalUrl := baseUrlLower == "" || strings.Contains(baseUrlLower, "127.0.0.1") || strings.Contains(baseUrlLower, "localhost")
@@ -788,11 +870,165 @@ func classifyModel(provider, modelID, apiKey, baseUrl string) (tier, tierLabel s
 	}
 }
 
+func isPlaceholderSecret(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	if lower == "" {
+		return true
+	}
+	placeholders := []string{
+		"ollama_api_key",
+		"openrouter_api_key",
+		"anthropic_api_key",
+		"google_api_key",
+		"openai_api_key",
+		"your_api_key",
+		"sk-or-placeholder",
+		"dummy",
+	}
+	for _, placeholder := range placeholders {
+		if lower == placeholder || strings.Contains(lower, placeholder) {
+			return true
+		}
+	}
+	return false
+}
+
+func providerEnvKeyName(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openrouter":
+		return "OPENROUTER_API_KEY"
+	case "anthropic":
+		return "ANTHROPIC_API_KEY"
+	case "google":
+		return "GOOGLE_API_KEY"
+	case "openai":
+		return "OPENAI_API_KEY"
+	case "xai":
+		return "XAI_API_KEY"
+	case "ollama":
+		return "OLLAMA_API_KEY"
+	default:
+		return ""
+	}
+}
+
+func providerKeyFromEnv(env map[string]string, provider string) string {
+	if env == nil {
+		return ""
+	}
+	if key := providerEnvKeyName(provider); key != "" {
+		return strings.TrimSpace(env[key])
+	}
+	return ""
+}
+
+func ResolveProviderAPIKey(ocDir, provider string) (string, error) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" || provider == "openclaw" || provider == "ollama" {
+		return "", nil
+	}
+	doc, _, _, err := readEffectiveConfigDocument(ocDir)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(doc)
+	if err != nil {
+		return "", err
+	}
+	var raw struct {
+		Env    map[string]string `json:"env"`
+		Models struct {
+			Providers map[string]struct {
+				ApiKey SecretValue `json:"apiKey"`
+			} `json:"providers"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return "", err
+	}
+	if key := providerKeyFromEnv(raw.Env, provider); key != "" && !isPlaceholderSecret(key) {
+		return key, nil
+	}
+	if raw.Models.Providers != nil {
+		if prov, ok := raw.Models.Providers[provider]; ok {
+			if key := prov.ApiKey.Resolve(); key != "" && !isPlaceholderSecret(key) {
+				return key, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+func providerRuntimeDiagnostics(provider, modelID, baseURL string, hasAPIKey bool) (string, bool, []string) {
+	normalized := strings.ToLower(strings.TrimSpace(provider))
+	modelID = strings.TrimSpace(modelID)
+	switch normalized {
+	case "openclaw":
+		return "openclaw_gateway", true, nil
+	case "ollama":
+		if strings.HasSuffix(strings.ToLower(modelID), ":cloud") {
+			return "openclaw_gateway", true, []string{"Ollama :cloud diproses lewat OpenClaw Gateway"}
+		}
+		return "ollama_direct", true, nil
+	case "openrouter", "openai", "google", "xai":
+		if hasAPIKey {
+			return "direct_" + normalized, true, nil
+		}
+		return "openclaw_gateway", false, []string{"API key provider belum diatur"}
+	case "anthropic", "mistral":
+		if hasAPIKey {
+			return "openclaw_gateway", true, nil
+		}
+		return "openclaw_gateway", false, []string{"API key provider belum diatur"}
+	case "llamacpp":
+		return "openclaw_gateway", true, []string{"Pastikan llama.cpp server tersedia di gateway/router yang dipilih"}
+	case "unknown", "":
+		return "openclaw_gateway", false, []string{"provider model tidak dikenali"}
+	default:
+		if hasAPIKey {
+			return "openclaw_gateway", true, nil
+		}
+		return "openclaw_gateway", false, []string{"provider belum dikonfigurasi"}
+	}
+}
+
 // ModelGroups menyimpan model yang sudah dikelompokkan per tier.
 type ModelGroups struct {
 	Cloud        []ModelEntry `json:"cloud"`
 	CloudProxied []ModelEntry `json:"cloud_proxied"`
 	Local        []ModelEntry `json:"local"`
+}
+
+var modelProviderOrder = map[string]int{
+	"openclaw":   0,
+	"ollama":     1,
+	"openrouter": 2,
+	"anthropic":  3,
+	"google":     4,
+	"openai":     5,
+	"xai":        6,
+	"llamacpp":   7,
+}
+
+func modelProviderRank(provider string) int {
+	if rank, ok := modelProviderOrder[strings.ToLower(strings.TrimSpace(provider))]; ok {
+		return rank
+	}
+	return len(modelProviderOrder)
+}
+
+func sortModelEntries(entries []ModelEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		a, b := entries[i], entries[j]
+		rankA, rankB := modelProviderRank(a.Provider), modelProviderRank(b.Provider)
+		if rankA != rankB {
+			return rankA < rankB
+		}
+		if rankA == len(modelProviderOrder) && !strings.EqualFold(a.Provider, b.Provider) {
+			return strings.ToLower(a.Provider) < strings.ToLower(b.Provider)
+		}
+		return strings.ToLower(a.Label) < strings.ToLower(b.Label)
+	})
 }
 
 // GetAvailableModels membaca openclaw.json, query Ollama REST API untuk local models,
@@ -860,13 +1096,24 @@ func GetAvailableModels(ocDir string) ([]ModelEntry, ModelGroups, error) {
 		}
 		seen[fullID] = true
 		tier, tierLabel, hasApi := classifyModel(provider, modelID, apiKey, baseUrl)
+		routeTarget, runtimeSupported, warnings := providerRuntimeDiagnostics(provider, modelID, baseUrl, hasApi)
+		adapter := providerAdapter(provider)
 		e := ModelEntry{
-			ID:        fullID,
-			Label:     modelID,
-			Provider:  provider,
-			Tier:      tier,
-			TierLabel: tierLabel,
-			HasAPIKey: hasApi,
+			ID:                   fullID,
+			Label:                modelID,
+			Provider:             provider,
+			Tier:                 tier,
+			TierLabel:            tierLabel,
+			HasAPIKey:            hasApi,
+			RouteTarget:          routeTarget,
+			RuntimeSupported:     runtimeSupported,
+			AdapterID:            adapter.ID,
+			CanonicalModel:       fullID,
+			OutboundModelExample: outboundModelExample(routeTarget, fullID, modelID),
+			ProviderBaseURL:      strings.TrimSpace(baseUrl),
+			ProviderDocsURL:      adapter.ProviderDocsURL,
+			RuntimeNotes:         adapter.RuntimeNotes,
+			Warnings:             warnings,
 		}
 		all = append(all, e)
 		switch tier {
@@ -880,9 +1127,11 @@ func GetAvailableModels(ocDir string) ([]ModelEntry, ModelGroups, error) {
 	}
 	addModelRef := func(ref string) {
 		provider, modelID := splitModelRef(ref)
-		apiKey, baseUrl := "", ""
+		apiKey, baseUrl := providerKeyFromEnv(raw.Env, provider), ""
 		if prov, ok := raw.Models.Providers[provider]; ok {
-			apiKey = prov.ApiKey.Resolve()
+			if resolved := prov.ApiKey.Resolve(); resolved != "" {
+				apiKey = resolved
+			}
 			baseUrl = prov.BaseUrl
 		}
 		addEntry(provider, modelID, apiKey, baseUrl)
@@ -902,7 +1151,11 @@ func GetAvailableModels(ocDir string) ([]ModelEntry, ModelGroups, error) {
 	for providerName, prov := range raw.Models.Providers {
 		for _, m := range prov.Models {
 			if m.ID != "" {
-				addEntry(providerName, m.ID, prov.ApiKey.Resolve(), prov.BaseUrl)
+				apiKey := providerKeyFromEnv(raw.Env, providerName)
+				if resolved := prov.ApiKey.Resolve(); resolved != "" {
+					apiKey = resolved
+				}
+				addEntry(providerName, m.ID, apiKey, prov.BaseUrl)
 			}
 		}
 	}
@@ -951,6 +1204,11 @@ func GetAvailableModels(ocDir string) ([]ModelEntry, ModelGroups, error) {
 			}
 		}
 	}
+
+	sortModelEntries(all)
+	sortModelEntries(groups.Cloud)
+	sortModelEntries(groups.CloudProxied)
+	sortModelEntries(groups.Local)
 
 	return all, groups, nil
 }

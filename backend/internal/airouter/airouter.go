@@ -41,6 +41,8 @@ type Status struct {
 	RuntimeDir       string    `json:"runtime_dir,omitempty"`
 	LoopbackEnforced bool      `json:"loopback_enforced"`
 	ProcessGroup     bool      `json:"process_group_enabled"`
+	RouteTarget      string    `json:"route_target"`
+	RuntimeSupported bool      `json:"runtime_supported"`
 	SecurityWarnings []string  `json:"security_warnings,omitempty"`
 	SecurityNotices  []string  `json:"security_notices,omitempty"`
 	Reachable        bool      `json:"reachable"`
@@ -138,6 +140,8 @@ func probeStatus(cfg *config.Config, agentRoutingEnabled bool, runtimeTool strin
 		RuntimeTool:      runtimeTool,
 		RuntimeActive:    runtimeActive,
 		AgentRouting:     agentRoutingEnabled,
+		RouteTarget:      routeTarget(cfg.AIRouterEnabled),
+		RuntimeSupported: validation.OK,
 		Warnings:         append([]string{}, validation.Warnings...),
 		CheckedAt:        time.Now(),
 	}
@@ -147,12 +151,14 @@ func probeStatus(cfg *config.Config, agentRoutingEnabled bool, runtimeTool strin
 	if !validation.OK {
 		status.Warnings = append(status.Warnings, validation.Errors...)
 		status.Error = "router config ditolak"
+		status.RuntimeSupported = false
 		return status
 	}
 	modelsURL := ModelsURL(validation.BaseURL)
 	req, err := http.NewRequest(http.MethodGet, modelsURL, nil)
 	if err != nil {
 		status.Error = "router URL invalid"
+		status.RuntimeSupported = false
 		return status
 	}
 	if token := strings.TrimSpace(cfg.AIRouterToken); token != "" {
@@ -162,22 +168,26 @@ func probeStatus(cfg *config.Config, agentRoutingEnabled bool, runtimeTool strin
 	res, err := hc.Do(req)
 	if err != nil {
 		status.Error = sanitizeError(err)
+		status.RuntimeSupported = false
 		return status
 	}
 	defer res.Body.Close()
 	status.Reachable = res.StatusCode >= 200 && res.StatusCode < 500
 	if res.StatusCode != http.StatusOK {
 		status.Error = fmt.Sprintf("router /v1/models HTTP %d", res.StatusCode)
+		status.RuntimeSupported = false
 		return status
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
 		status.Error = "gagal membaca response router"
+		status.RuntimeSupported = false
 		return status
 	}
 	var mr modelsResponse
 	if err := json.Unmarshal(body, &mr); err != nil {
 		status.Error = "format /v1/models tidak dikenali"
+		status.RuntimeSupported = false
 		return status
 	}
 	for _, item := range mr.Data {
@@ -186,7 +196,15 @@ func probeStatus(cfg *config.Config, agentRoutingEnabled bool, runtimeTool strin
 		}
 	}
 	status.ModelCount = len(status.Models)
+	status.RuntimeSupported = true
 	return status
+}
+
+func routeTarget(aiRouterEnabled bool) string {
+	if aiRouterEnabled {
+		return "ai_router"
+	}
+	return "openclaw_gateway"
 }
 
 func ChatCompletionsURL(raw string) string {

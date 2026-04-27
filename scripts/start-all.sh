@@ -84,6 +84,19 @@ fi
 kill_port 8080
 kill_port 5173
 
+# Bot runners keep their own Telegram polling locks. Stop them explicitly before
+# a backend restart so agents cannot keep serving old shared runtime source.
+BOT_PIDS=$(pgrep -f "$BASE_DIR/bots/shared/runner.js" 2>/dev/null || true)
+if [[ -n "$BOT_PIDS" ]]; then
+  warn "Bot runner lama masih aktif, mematikan sebelum start backend..."
+  echo "$BOT_PIDS" | xargs kill 2>/dev/null || true
+  sleep 1
+  BOT_PIDS=$(pgrep -f "$BASE_DIR/bots/shared/runner.js" 2>/dev/null || true)
+  if [[ -n "$BOT_PIDS" ]]; then
+    echo "$BOT_PIDS" | xargs kill -9 2>/dev/null || true
+  fi
+fi
+
 # ── 2.5) Start PostgreSQL (pgvector Cognitive Memory) ─────────────────────────
 PGCTL="$HOME/.local/share/mise/installs/postgres/16.13/bin/pg_ctl"
 PGDATA="$HOME/.local/share/mise/installs/postgres/16.13/data"

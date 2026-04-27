@@ -164,6 +164,8 @@ func safeCommandEnv() []string {
 		"XDG_CONFIG_HOME",
 		"XDG_DATA_HOME",
 		"OPENCLAW_HOME",
+		"OPENCLAW_GW_TOKEN",
+		"OPENCLAW_GATEWAY_TOKEN",
 	}
 	env := make([]string, 0, len(allowed))
 	for _, key := range allowed {

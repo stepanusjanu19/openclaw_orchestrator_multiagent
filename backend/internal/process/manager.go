@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -20,15 +21,18 @@ import (
 	"multiagent-platform/internal/config"
 )
 
+var validRuntimeAgentID = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
+
 // AgentProcess mewakili satu bot runner yang sedang berjalan.
 type AgentProcess struct {
-	ID         string
-	Cmd        *exec.Cmd
-	LogCh      chan string // channel untuk streaming log
-	IngressURL string
-	StartedAt  time.Time
-	mu         sync.Mutex
-	running    bool
+	ID                string
+	Cmd               *exec.Cmd
+	LogCh             chan string // channel untuk streaming log
+	IngressURL        string
+	StartedAt         time.Time
+	RuntimeSourcePath string
+	mu                sync.Mutex
+	running           bool
 }
 
 // Manager mengelola semua agent processes.
@@ -54,15 +58,24 @@ type AgentConfig struct {
 	SoulMDPath       string // Explicit exact path to SOUL.md
 	ProviderAPIKey   string // Optional: provider API key (openrouter, gemini, dst)
 	ProviderName     string // Optional: human-readable provider name untuk error
+	ModelRouteTarget string // Optional: route target dari catalog model
+	ModelTier        string // Optional: local/cloud/cloud_proxied
+	ModelAdapterID   string // Optional: adapter id dari catalog model
+	ModelOutbound    string // Optional: outbound model dari catalog model
+	ModelProviderURL string // Optional: provider base URL non-secret
+	RuntimeSupported string // Optional: true/false dari catalog model
 }
 
 // AgentStatus adalah status agent yang di-return ke API.
 type AgentStatus struct {
-	ID        string    `json:"id"`
-	Label     string    `json:"label"`
-	Running   bool      `json:"running"`
-	StartedAt time.Time `json:"started_at,omitempty"`
-	PID       int       `json:"pid,omitempty"`
+	ID                 string    `json:"id"`
+	Label              string    `json:"label"`
+	Running            bool      `json:"running"`
+	StartedAt          time.Time `json:"started_at,omitempty"`
+	PID                int       `json:"pid,omitempty"`
+	RuntimeSourceMTime time.Time `json:"runtime_source_mtime,omitempty"`
+	RuntimeStale       bool      `json:"runtime_stale,omitempty"`
+	RuntimeWarning     string    `json:"runtime_warning,omitempty"`
 }
 
 // NewManager membuat instance Manager untuk process node.
@@ -72,7 +85,7 @@ func NewManager(cfg *config.Config, internalToken, backendURL, toolToken string)
 	}
 	// Clean up any orphaned node bot processes to avoid polling conflicts.
 	// Gunakan argv statis tanpa shell untuk menghindari command injection surface.
-	exec.Command("pkill", "-f", `bots/agents/.*/index.js`).Run()
+	exec.Command("pkill", "-f", `bots/shared/runner.js`).Run()
 
 	return &Manager{
 		agents:        make(map[string]*AgentProcess),
@@ -89,27 +102,70 @@ func NewManager(cfg *config.Config, internalToken, backendURL, toolToken string)
 //   - Model LOKAL (misal 'ollama/llama3.1:8b') → return model mentah tanpa prefix
 //   - Model lain (openrouter, custom) → return "" (bypass dinonaktifkan, biarkan Gateway menangani)
 func resolveDirectModel(openClawModel string) string {
-	// Strip semua prefix provider yang dikenal
-	model := strings.TrimPrefix(openClawModel, "ollama/")
-	model = strings.TrimPrefix(model, "openrouter/")
-	model = strings.TrimSpace(model)
-
-	// Jika model adalah tipe cloud/remote → nonaktifkan bypass
-	// Cloud model hanya bisa diakses melalui Gateway OpenClaw
-	if strings.Contains(model, ":cloud") ||
-		strings.Contains(openClawModel, "openrouter/") ||
-		strings.Contains(openClawModel, "anthropic/") ||
-		strings.Contains(openClawModel, "google/") ||
-		strings.Contains(openClawModel, "mistral/") {
-		return "" // Bypass dinonaktifkan — model ini butuh Gateway
+	trimmed := strings.TrimSpace(openClawModel)
+	provider, model, ok := strings.Cut(trimmed, "/")
+	if !ok {
+		return ""
 	}
-
-	return model // Model lokal → bypass aktif
+	if strings.ToLower(strings.TrimSpace(provider)) != "ollama" {
+		return ""
+	}
+	model = strings.TrimSpace(model)
+	if model == "" || strings.HasSuffix(strings.ToLower(model), ":cloud") {
+		return ""
+	}
+	return model
 }
 
 func ingressPortForAgent(agentID string) int {
 	// 19000-28999: deterministic, localhost-only, avoids per-process negotiation.
 	return 19000 + int(crc32.ChecksumIEEE([]byte(agentID))%10000)
+}
+
+func runtimeSourcePath(botsDir string) string {
+	return filepath.Join(botsDir, "shared", "agent-engine.js")
+}
+
+func runtimeSourceMTime(path string) time.Time {
+	stat, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return stat.ModTime()
+}
+
+func secureRunnerPath(botsDir string) (string, error) {
+	if strings.TrimSpace(botsDir) == "" {
+		return "", fmt.Errorf("BOTS_DIR kosong")
+	}
+	botsAbs, err := filepath.Abs(botsDir)
+	if err != nil {
+		return "", err
+	}
+	entryPoint := filepath.Join(botsAbs, "shared", "runner.js")
+	entryAbs, err := filepath.Abs(entryPoint)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(botsAbs, entryAbs)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("runner path keluar dari BOTS_DIR")
+	}
+	st, err := os.Lstat(entryAbs)
+	if err != nil {
+		return "", fmt.Errorf("entry point tidak ditemukan: %s", entryAbs)
+	}
+	if st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() {
+		return "", fmt.Errorf("entry point tidak valid: %s", entryAbs)
+	}
+	return entryAbs, nil
+}
+
+func validateEnvValue(name, value string) error {
+	if strings.ContainsAny(value, "\x00\n\r") {
+		return fmt.Errorf("%s mengandung karakter tidak valid", name)
+	}
+	return nil
 }
 
 // Start spawn proses bot untuk agent tertentu.
@@ -120,10 +176,19 @@ func (m *Manager) Start(cfg AgentConfig) error {
 	if ap, exists := m.agents[cfg.ID]; exists && ap.running {
 		return fmt.Errorf("agent %s sudah berjalan (PID %d)", cfg.ID, ap.Cmd.Process.Pid)
 	}
+	if !validRuntimeAgentID.MatchString(cfg.ID) {
+		return fmt.Errorf("agent id tidak valid")
+	}
+	if err := validateEnvValue("AGENT_LABEL", cfg.Label); err != nil {
+		return err
+	}
+	if err := validateEnvValue("OPENCLAW_MODEL", cfg.OpenClawModel); err != nil {
+		return err
+	}
 
-	entryPoint := filepath.Join(cfg.BotsDir, "agents", cfg.ID, "index.js")
-	if _, err := os.Stat(entryPoint); os.IsNotExist(err) {
-		return fmt.Errorf("entry point tidak ditemukan: %s", entryPoint)
+	entryPoint, err := secureRunnerPath(cfg.BotsDir)
+	if err != nil {
+		return err
 	}
 
 	env := os.Environ()
@@ -143,12 +208,20 @@ func (m *Manager) Start(cfg AgentConfig) error {
 		fmt.Sprintf("AI_ROUTER_MAX_RESPONSE_BYTES=%d", m.cfg.AIRouterMaxResponseBytes),
 		fmt.Sprintf("AI_ROUTER_ALLOW_TOOL_CALLS=%t", m.cfg.AIRouterAllowToolCalls),
 		"OPENCLAW_MODEL="+cfg.OpenClawModel,
+		"NODE_WORKSPACE_PROMPT=true",
 		"AGENT_ID="+cfg.ID,
+		"AGENT_LABEL="+cfg.Label,
 		"SOUL_MD_PATH="+cfg.SoulMDPath,
 		"OPENCLAW_INTERNAL_TOKEN="+m.internalToken,
 		"OPENCLAW_BACKEND_URL="+m.backendURL,
 		"PROVIDER_API_KEY="+cfg.ProviderAPIKey,
 		"PROVIDER_NAME="+cfg.ProviderName,
+		"MODEL_ROUTE_TARGET="+cfg.ModelRouteTarget,
+		"MODEL_TIER="+cfg.ModelTier,
+		"MODEL_ADAPTER_ID="+cfg.ModelAdapterID,
+		"MODEL_OUTBOUND="+cfg.ModelOutbound,
+		"MODEL_PROVIDER_BASE_URL="+cfg.ModelProviderURL,
+		"MODEL_RUNTIME_SUPPORTED="+cfg.RuntimeSupported,
 		"AGENT_INGRESS_HOST=127.0.0.1",
 		fmt.Sprintf("AGENT_INGRESS_PORT=%d", ingressPort),
 		// AGENT_DIRECT_MODEL: hanya diisi untuk model LOKAL Ollama.
@@ -175,7 +248,7 @@ func (m *Manager) Start(cfg AgentConfig) error {
 
 	cmd := exec.Command(m.cfg.NodeBin, entryPoint)
 	cmd.Env = env
-	cmd.Dir = cfg.BotsDir
+	cmd.Dir = filepath.Dir(filepath.Dir(entryPoint))
 
 	// Pipe stdout dan stderr ke log channel
 	logCh := make(chan string, 500)
@@ -194,12 +267,13 @@ func (m *Manager) Start(cfg AgentConfig) error {
 	}
 
 	ap := &AgentProcess{
-		ID:         cfg.ID,
-		Cmd:        cmd,
-		LogCh:      logCh,
-		IngressURL: fmt.Sprintf("http://127.0.0.1:%d", ingressPort),
-		StartedAt:  time.Now(),
-		running:    true,
+		ID:                cfg.ID,
+		Cmd:               cmd,
+		LogCh:             logCh,
+		IngressURL:        fmt.Sprintf("http://127.0.0.1:%d", ingressPort),
+		StartedAt:         time.Now(),
+		RuntimeSourcePath: runtimeSourcePath(cfg.BotsDir),
+		running:           true,
 	}
 	m.agents[cfg.ID] = ap
 
@@ -221,6 +295,8 @@ func (m *Manager) Start(cfg AgentConfig) error {
 		close(logCh)
 	}()
 
+	sourceMTime := runtimeSourceMTime(ap.RuntimeSourcePath)
+	logCh <- fmt.Sprintf("[%s][RUNTIME] runtime_started_at=%s runtime_source_mtime=%s runtime_source=%s route_resolver_version=node-workspace-route-v3", cfg.ID, ap.StartedAt.Format(time.RFC3339Nano), sourceMTime.Format(time.RFC3339Nano), filepath.Base(ap.RuntimeSourcePath))
 	fmt.Printf("✅ [manager] Agent %s started (PID %d)\n", cfg.ID, cmd.Process.Pid)
 	return nil
 }
@@ -276,6 +352,11 @@ func (m *Manager) GetStatus(agentID string) AgentStatus {
 		ID:        agentID,
 		Running:   ap.running,
 		StartedAt: ap.StartedAt,
+	}
+	status.RuntimeSourceMTime = runtimeSourceMTime(ap.RuntimeSourcePath)
+	if ap.running && !status.RuntimeSourceMTime.IsZero() && ap.StartedAt.Before(status.RuntimeSourceMTime) {
+		status.RuntimeStale = true
+		status.RuntimeWarning = "Agent runtime stale: source lebih baru dari proses aktif. Restart agent."
 	}
 	if ap.running && ap.Cmd.Process != nil {
 		status.PID = ap.Cmd.Process.Pid

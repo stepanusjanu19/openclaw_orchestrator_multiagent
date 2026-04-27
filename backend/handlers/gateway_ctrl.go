@@ -21,11 +21,35 @@ type OpenClawCtrlHandler struct {
 
 // DaemonStatus menyimpan info status daemon.
 type DaemonStatus struct {
-	Running    bool   `json:"running"`
-	PID        int    `json:"pid,omitempty"`
-	Method     string `json:"method"`        // "systemctl" | "pgrep" | "probe"
+	Running     bool   `json:"running"`
+	PID         int    `json:"pid,omitempty"`
+	Method      string `json:"method"` // "systemctl" | "pgrep" | "probe"
 	ActiveSince string `json:"active_since,omitempty"`
-	Error      string `json:"error,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+func openClawGatewayEnv(base []string, token string) []string {
+	env := append([]string{}, base...)
+	if strings.TrimSpace(token) != "" {
+		env = append(env,
+			"OPENCLAW_GW_TOKEN="+token,
+			"OPENCLAW_GATEWAY_TOKEN="+token,
+		)
+	}
+	return env
+}
+
+func setOpenClawSystemdTokenAlias(token string) {
+	if strings.TrimSpace(token) == "" {
+		return
+	}
+	_ = exec.Command(
+		"systemctl",
+		"--user",
+		"set-environment",
+		"OPENCLAW_GW_TOKEN="+token,
+		"OPENCLAW_GATEWAY_TOKEN="+token,
+	).Run()
 }
 
 // detectDaemon mencoba mendeteksi status daemon OpenClaw secara berlapis.
@@ -82,6 +106,7 @@ func (h *OpenClawCtrlHandler) GetDaemonStatus(w http.ResponseWriter, r *http.Req
 // RestartDaemon — POST /api/openclaw/daemon/restart
 func (h *OpenClawCtrlHandler) RestartDaemon(w http.ResponseWriter, r *http.Request) {
 	// Coba systemctl restart terlebih dahulu
+	setOpenClawSystemdTokenAlias(h.App.Cfg.GatewayToken)
 	if err := exec.Command("systemctl", "--user", "restart", "openclaw").Run(); err == nil {
 		time.Sleep(1 * time.Second) // beri waktu daemon naik
 		status := detectDaemon(h.App.Cfg.GatewayURL)
@@ -100,7 +125,7 @@ func (h *OpenClawCtrlHandler) RestartDaemon(w http.ResponseWriter, r *http.Reque
 	cmd := exec.Command("openclaw", "gateway")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	cmd.Env = append(os.Environ(), "OPENCLAW_DETACH=1")
+	cmd.Env = append(openClawGatewayEnv(os.Environ(), h.App.Cfg.GatewayToken), "OPENCLAW_DETACH=1")
 	if err := cmd.Start(); err != nil {
 		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("Gagal restart daemon: %v", err))
 		return

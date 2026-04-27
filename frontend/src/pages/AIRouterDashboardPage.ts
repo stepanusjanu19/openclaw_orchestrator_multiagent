@@ -176,6 +176,8 @@ export class AIRouterDashboardPage {
           <div class="ai-router-meta">
             <span>Router running <code>${runtimeActiveLabel}</code></span>
             <span>Agent routing <code>${agentRoutingEnabled ? 'enabled' : 'not enabled'}</code></span>
+            <span>Route target <code>${escapeHTML(routerStatus?.route_target ?? 'ai_router')}</code></span>
+            <span>Runtime support <code>${routerStatus?.runtime_supported ? 'ready' : 'needs setup'}</code></span>
             <span>OpenClaw/Gateway/Webhook <code>unaffected</code></span>
             <span>Endpoint <code>${escapeHTML(active.endpoint || 'waiting')}</code></span>
             <span>Binary trust <code>${binaryTrusted ? 'trusted' : 'untrusted'}</code></span>

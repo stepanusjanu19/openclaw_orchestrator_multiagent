@@ -25,7 +25,7 @@ func (h *PersonasHandler) GetPersona(w http.ResponseWriter, r *http.Request) {
 	}
 	soulPath := ResolveSoulMDPath(h.App.Cfg.OpenClawWorkspaceDir, agentID)
 
-	data, err := os.ReadFile(soulPath)
+	data, err := readRegularFileNoSymlink(soulPath, 2<<20)
 	if os.IsNotExist(err) {
 		jsonError(w, http.StatusNotFound, "SOUL.md tidak ditemukan untuk agent "+agentID)
 		return
@@ -67,13 +67,13 @@ func (h *PersonasHandler) UpdatePersona(w http.ResponseWriter, r *http.Request) 
 
 	soulPath := ResolveSoulMDPath(h.App.Cfg.OpenClawWorkspaceDir, agentID)
 	soulDir := filepath.Dir(soulPath)
-	
-	if err := os.MkdirAll(soulDir, 0755); err != nil {
+
+	if err := mkdirSecure(soulDir); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Gagal buat direktori: "+err.Error())
 		return
 	}
 
-	if err := os.WriteFile(soulPath, []byte(content), 0644); err != nil {
+	if err := writeFileNoSymlink(soulPath, []byte(content)); err != nil {
 		jsonError(w, http.StatusInternalServerError, "Gagal tulis SOUL.md: "+err.Error())
 		return
 	}

@@ -206,17 +206,25 @@ FRONTEND_ORIGIN=http://localhost:5173</pre>
 
           <h4 style="margin-bottom:8px;margin-top:16px">2. Per-Agent Credentials</h4>
           <p style="color:var(--clr-text-secondary);font-size:0.85rem;margin-bottom:8px">
-            Buat satu file per agent di <code>credentials/agents/</code>:
+            Simpan registry semua agent di <code>credentials/agents.json</code>:
           </p>
-          <pre class="log-viewer" style="height:auto;padding:12px;font-size:0.8rem">credentials/agents/main.env
-
-AGENT_ID=main
-AGENT_LABEL=Main Assistant
-TELEGRAM_BOT_TOKEN=&lt;token dari BotFather&gt;
-OPENCLAW_MODEL=openclaw/main</pre>
+          <pre class="log-viewer" style="height:auto;padding:12px;font-size:0.8rem">{
+  "version": 1,
+  "agents": {
+    "main": {
+      "id": "main",
+      "label": "Main Assistant",
+      "telegram_bot_token": "&lt;token dari BotFather&gt;",
+      "openclaw_model": "openclaw/main",
+      "model_route": {}
+    }
+  }
+}</pre>
 
           <div class="no-token-banner" style="margin-top:16px">
-            ⚠️ Pastikan BOTS_DIR di <code>.env</code> diisi dengan path absolut ke folder <code>bots/</code>
+            ⚠️ Pastikan BOTS_DIR di <code>.env</code> diisi dengan path absolut ke folder <code>bots/</code>.
+            File credential yang di-ignore Git tetap bisa terlihat di VS Code Explorer; gunakan
+            <code>git check-ignore -v credentials/agents.json</code> untuk memverifikasi.
           </div>
         </div>
 
@@ -250,7 +258,7 @@ OPENCLAW_MODEL=openclaw/main</pre>
             <li>Buka Telegram dan cari <strong>@BotFather</strong></li>
             <li>Kirim <code>/newbot</code> → masukkan nama bot → dapat token</li>
             <li>Ulangi untuk setiap agent (main, dev, alpha) — masing-masing bot berbeda</li>
-            <li>Paste token ke file <code>credentials/agents/&lt;id&gt;.env</code></li>
+            <li>Paste token ke entry agent di <code>credentials/agents.json</code></li>
             <li>Restart backend: <code>cd backend && make run</code></li>
           </ol>
         </div>

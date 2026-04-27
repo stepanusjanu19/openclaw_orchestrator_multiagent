@@ -22,6 +22,7 @@ for (const key of REQUIRED_ENV) {
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const AGENT_ID = process.env.AGENT_ID;
+const AGENT_LABEL = process.env.AGENT_LABEL || AGENT_ID;
 const MODEL = process.env.OPENCLAW_MODEL;
 const GW_URL = process.env.OPENCLAW_GW_URL;
 
@@ -104,7 +105,7 @@ export function createBot() {
           if (text === "/start") {
             bot.sendMessage(
               msg.chat.id,
-              `👋 Hi! Saya agent *${AGENT_ID}*. Ketik pesanmu dan saya akan jawab.`,
+              `👋 Hi! Saya *${AGENT_LABEL}* (${AGENT_ID}). Ketik pesanmu dan saya akan jawab.`,
               { parse_mode: "Markdown" }
             );
           }

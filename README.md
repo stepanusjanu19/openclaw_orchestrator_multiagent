@@ -57,10 +57,12 @@ Go API Server (:8080)                ← auth, process manager, CLI runner, secu
 Vite+TS Dashboard (:5173)            ← agents, Code Tools, AI Router, Security Center, Visitor, System
 
 Storage:
-- credentials/.env + credentials/agents/*.env untuk konfigurasi lokal non-Git.
+- credentials/.env + credentials/agents.json untuk konfigurasi lokal non-Git.
 - credentials/security/*.enc untuk encrypted security store dan audit JSONL.
 - PostgreSQL/pgvector untuk memory agent dan optional gateway_visitors.
 ```
+
+> Catatan: file di `credentials/` tetap bisa terlihat di VS Code Explorer meskipun sudah di-ignore Git. Cek dengan `git check-ignore -v credentials/agents.json`; jika ignored, file tersebut tidak akan masuk commit biasa.
 
 ## 🧭 Cara Kerja Project
 
@@ -74,7 +76,7 @@ Perintah tersebut memanggil `scripts/start-all.sh`. Script ini akan membangun ul
 
 Setelah platform aktif, dashboard di `http://localhost:5173` menjadi pusat kontrol. Frontend mengirim request REST/SSE ke Go API di `http://localhost:8080` untuk membaca daftar agent, start/stop bot, mengganti model, mengedit persona, menjalankan Code Tools, membuka Security Center, memantau Visitor intelligence, dan menampilkan live log.
 
-Backend membaca konfigurasi global dari `credentials/.env` dan credential per-agent dari `credentials/agents/*.env`. Saat sebuah agent distart dari dashboard, backend membuat proses Node.js baru dari `bots/agents/<agent-id>/index.js`, lalu menyuntikkan environment seperti token Telegram, model, path `SOUL.md`, URL OpenClaw Gateway, dan koneksi memory.
+Backend membaca konfigurasi global dari `credentials/.env` dan registry per-agent dari `credentials/agents.json`. Saat sebuah agent distart dari dashboard, backend membuat proses Node.js baru dari shared runner `bots/shared/runner.js`, lalu menyuntikkan environment seperti token Telegram, agent ID, model, path `SOUL.md`, URL OpenClaw Gateway, dan koneksi memory.
 
 Bot runner menerima pesan dari Telegram, memuat persona dari `SOUL.md`, mengambil memory relevan dari PostgreSQL/pgvector jika tersedia, lalu membentuk prompt untuk dikirim ke OpenClaw Gateway di `:14000` atau model yang dikonfigurasi. Jika `9router` atau `omniroute` distart dari Code Tools, router tersebut berjalan sebagai private downstream di loopback (`127.0.0.1`/`localhost`) dan menu **AI Router** muncul otomatis untuk kontrol runtime. Jika PostgreSQL atau embedding service tidak tersedia, modul memory akan terdegradasi secara non-fatal sehingga agent tetap bisa merespons.
 
@@ -90,19 +92,17 @@ Security Center menyimpan policy masking, ruleset, template, gateway secret, dan
 multiagentp/
 ├── credentials/          🔒 SEMUA credential (dalam .gitignore)
 │   ├── .env              Global: GW_URL, GW_TOKEN, port
+│   ├── agents.json       Registry credential + model per agent
 │   ├── security/         Encrypted policy/rules/template/audit/gateway secret store
-│   └── agents/
-│       ├── main.env      Token Telegram + model config
-│       ├── dev.env
-│       └── alpha.env
 ├── backend/              Go API server
 │   ├── main.go
 │   ├── handlers/         HTTP route handlers
 │   └── internal/         Config, process, openclaw, security, visitor, router modules
 ├── bots/                 Node.js bot runners
+│   ├── shared/runner.js    Shared entrypoint untuk semua agent
 │   ├── shared/base-bot.js  Generic bot logic (no hardcoded creds)
 │   ├── shared/memory.js    Cognitive Memory dengan pgvector
-│   └── agents/{main,dev,alpha}/index.js
+│   └── agents/             Legacy/custom agent folders bila masih ada
 ├── frontend/             Vite + TypeScript dashboard
 │   ├── public/           OpenClaw SVG logo/favicons
 │   └── src/
@@ -145,12 +145,24 @@ Edit file-file di `credentials/` (File ini sengaja diabaikan oleh Git untuk keam
 BOTS_DIR=/home/lenvo_centos/Documents/js/multiagentp/bots
 ```
 
-**`credentials/agents/main.env`** — isi token bot:
-```env
-TELEGRAM_BOT_TOKEN=<token dari BotFather>
+**`credentials/agents.json`** — isi token bot pada entry agent:
+```json
+{
+  "version": 1,
+  "agents": {
+    "main": {
+      "id": "main",
+      "label": "main",
+      "telegram_bot_token": "<token dari BotFather>",
+      "openclaw_model": "openclaw/main",
+      "model_route": {}
+    }
+  }
+}
 ```
 
-> *Tip: Untuk agent `dev` dan `alpha`: buat bot baru via `@BotFather` → edit `credentials/agents/dev.env` dan `alpha.env`.*
+> *Tip: Untuk agent `dev` dan `alpha`: buat bot baru via `@BotFather` → tambah/update entry di `credentials/agents.json`, atau buat dari dashboard agar registry ditulis otomatis.*
+> File registry ini berada di `.gitignore`; VS Code masih dapat menampilkannya di Explorer, tetapi Git tidak melacaknya selama `git check-ignore -v credentials/agents.json` mengarah ke `.gitignore`.
 
 ### 4. Daftarkan Agent ke OpenClaw Gateway
 
@@ -260,9 +272,12 @@ npm run dev                 # Berjalan di http://localhost:5173
 # Bot runner manual (untuk debugging & test)
 cd bots
 export $(cat ../credentials/.env | xargs)
-export $(cat ../credentials/agents/main.env | xargs)
+export AGENT_ID=main
+export AGENT_LABEL=main
+export TELEGRAM_BOT_TOKEN=<token dari BotFather>
+export OPENCLAW_MODEL=openclaw/main
 export SOUL_MD_PATH=../openclaw-configs/main/SOUL.md
-node agents/main/index.js
+node shared/runner.js
 ```
 
 ## 📋 Tech Stack (Detail)
