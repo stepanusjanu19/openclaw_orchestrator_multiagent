@@ -50,7 +50,7 @@ export class LoginPage {
     const logoEl = document.createElement('div');
     logoEl.className = 'login-logo';
     logoEl.innerHTML = `
-      <div class="login-logo-icon">OC</div>
+      <div class="login-logo-icon"><img src="/openclaw-mark.svg" alt="" aria-hidden="true" /></div>
       <div>
         <div class="login-logo-title">OpenClaw</div>
         <div class="login-logo-sub">Control Platform</div>
