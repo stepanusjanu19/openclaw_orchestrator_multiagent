@@ -31,18 +31,23 @@ type App struct {
 		Lock()
 		Unlock()
 	}
-	Manager  *process.Manager
-	Security *security.Manager
-	Visitors *visitor.Store
+	Manager   *process.Manager
+	Security  *security.Manager
+	Visitors  *visitor.Store
+	Approvals *ApprovalStore
 }
 
 // AgentInfo adalah info lengkap satu agent untuk response API.
 type AgentInfo struct {
-	ID       string              `json:"id"`
-	Label    string              `json:"label"`
-	Model    string              `json:"model"`
-	HasToken bool                `json:"has_token"`
-	Status   process.AgentStatus `json:"status"`
+	ID               string              `json:"id"`
+	Label            string              `json:"label"`
+	Model            string              `json:"model"`
+	HasToken         bool                `json:"has_token"`
+	IsMain           bool                `json:"is_main"`
+	GatewayEligible  bool                `json:"gateway_eligible"`
+	CanStart         bool                `json:"can_start"`
+	StartBlockReason string              `json:"start_block_reason,omitempty"`
+	Status           process.AgentStatus `json:"status"`
 }
 
 // CreateAgentRequest adalah body untuk POST /api/agents.
@@ -75,6 +80,51 @@ type AgentsHandler struct {
 }
 
 var validAgentID = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
+var validTelegramBotToken = regexp.MustCompile(`^\d{6,12}:[A-Za-z0-9_-]{30,}$`)
+
+func agentInfoFromCred(id string, cred *config.AgentCred, status process.AgentStatus) AgentInfo {
+	label := id
+	model := "openclaw/" + id
+	hasToken := false
+	if cred != nil {
+		label = cred.Label
+		if strings.TrimSpace(label) == "" {
+			label = id
+		}
+		if id == "main" && strings.EqualFold(strings.TrimSpace(label), "main") {
+			label = "Main Agent"
+		}
+		model = cred.OpenClawModel
+		if strings.TrimSpace(model) == "" {
+			model = "openclaw/" + id
+		}
+		hasToken = hasUsableBotToken(cred.TelegramBotToken)
+	}
+	isMain := id == "main"
+	info := AgentInfo{
+		ID:              id,
+		Label:           label,
+		Model:           model,
+		HasToken:        hasToken,
+		IsMain:          isMain,
+		GatewayEligible: !isMain,
+		CanStart:        hasToken,
+		Status:          status,
+	}
+	if !hasToken {
+		if isMain {
+			info.StartBlockReason = "Configure bot token dulu untuk menjalankan Main Agent"
+		} else {
+			info.StartBlockReason = "Telegram bot token belum dikonfigurasi"
+		}
+	}
+	return info
+}
+
+func hasUsableBotToken(token string) bool {
+	token = strings.TrimSpace(token)
+	return token != "" && !strings.HasPrefix(token, "GANTI") && validTelegramBotToken.MatchString(token)
+}
 
 func applyModelRouteMetadata(cred *config.AgentCred, meta ModelRouteRequest) {
 	if cred == nil {
@@ -126,13 +176,7 @@ func (h *AgentsHandler) ListAgents(w http.ResponseWriter, r *http.Request) {
 		status := h.App.Manager.GetStatus(id)
 		status.ID = id
 		status.Label = cred.Label
-		agents = append(agents, AgentInfo{
-			ID:       id,
-			Label:    cred.Label,
-			Model:    cred.OpenClawModel,
-			HasToken: cred.TelegramBotToken != "" && !strings.HasPrefix(cred.TelegramBotToken, "GANTI"),
-			Status:   status,
-		})
+		agents = append(agents, agentInfoFromCred(id, cred, status))
 	}
 	jsonOK(w, agents)
 }
@@ -437,6 +481,52 @@ func (h *AgentsHandler) UpdateAgentModel(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+func (h *AgentsHandler) UpdateAgentToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	agentID := extractAgentID(r.URL.Path, "token")
+	if agentID == "" {
+		jsonError(w, http.StatusBadRequest, "Agent ID tidak valid")
+		return
+	}
+	var req struct {
+		TelegramBotToken string `json:"telegram_bot_token"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, "Request body tidak valid")
+		return
+	}
+	token := strings.TrimSpace(req.TelegramBotToken)
+	if !validTelegramBotToken.MatchString(token) {
+		jsonError(w, http.StatusBadRequest, "Format Telegram bot token tidak valid")
+		return
+	}
+	creds := h.CredsGetter()
+	cred, ok := creds[agentID]
+	if !ok {
+		jsonError(w, http.StatusNotFound, "Agent tidak ditemukan: "+agentID)
+		return
+	}
+	cred.TelegramBotToken = token
+	if err := config.WriteAgentCred(h.App.Cfg.CredentialsDir, cred); err != nil {
+		h.auditAgentRegistry(agentID, "update_token", "error", err, nil)
+		jsonError(w, http.StatusInternalServerError, "Gagal update token: "+err.Error())
+		return
+	}
+	updatedCreds := h.CredsGetter()
+	updatedCreds[agentID] = cred
+	h.CredsSetter(updatedCreds)
+	h.auditAgentRegistry(agentID, "update_token", "success", nil, map[string]interface{}{
+		"has_token": true,
+	})
+	jsonOK(w, map[string]interface{}{
+		"message":   fmt.Sprintf("Bot token agent '%s' diperbarui", agentID),
+		"has_token": true,
+	})
+}
+
 // StartAgent handler untuk POST /api/agents/:id/start
 func (h *AgentsHandler) StartAgent(w http.ResponseWriter, r *http.Request) {
 	agentID := extractAgentID(r.URL.Path, "start")
@@ -452,7 +542,11 @@ func (h *AgentsHandler) StartAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.HasPrefix(cred.TelegramBotToken, "GANTI") || cred.TelegramBotToken == "" {
+	if !hasUsableBotToken(cred.TelegramBotToken) {
+		if agentID == "main" {
+			jsonError(w, http.StatusBadRequest, "Configure bot token dulu untuk menjalankan Main Agent")
+			return
+		}
 		jsonError(w, http.StatusBadRequest, "Telegram bot token belum dikonfigurasi untuk agent ini")
 		return
 	}

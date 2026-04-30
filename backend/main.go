@@ -191,6 +191,7 @@ func main() {
 		InternalRPCToken: internalRPCToken,
 		Security:         securityMgr,
 		Visitors:         visitorStore,
+		Approvals:        handlers.NewApprovalStore(),
 	}
 
 	// ── Init Handlers ─────────────────────────────────────────────────────────
@@ -223,9 +224,10 @@ func main() {
 
 	gwManager := gateway.NewManager(*credDir, cfg.GatewayURL, securityMgr)
 	gatewayH := &handlers.GatewayHandler{
-		App:       appState,
-		GwManager: gwManager,
-		PublicURL: backendURL,
+		App:         appState,
+		GwManager:   gwManager,
+		PublicURL:   backendURL,
+		CredsGetter: registry.get,
 	}
 	securityH := &handlers.SecurityHandler{App: appState}
 	visitorsH := &handlers.VisitorsHandler{App: appState}
@@ -387,6 +389,10 @@ func main() {
 		case strings.HasSuffix(path, "/status") && r.Method == http.MethodGet:
 			agentsH.GetAgentStatus(w, r)
 
+		// Token
+		case strings.HasSuffix(path, "/token") && r.Method == http.MethodPut:
+			agentsH.UpdateAgentToken(w, r)
+
 		// SSE Logs
 		case strings.HasSuffix(path, "/logs") && r.Method == http.MethodGet:
 			logsH.StreamLogs(w, r)
@@ -441,6 +447,13 @@ func main() {
 		}
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 	})
+	mux.HandleFunc("/api/router/activate", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			routerStatusH.ActivateAgentRouting(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
 
 	mux.HandleFunc("/api/openclaw/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
@@ -472,6 +485,25 @@ func main() {
 			return
 		}
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	approvalsH := &handlers.ApprovalsHandler{App: appState}
+	mux.HandleFunc("/api/approvals", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			approvalsH.ListApprovals(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+	mux.HandleFunc("/api/approvals/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/approve") && r.Method == http.MethodPost:
+			approvalsH.ApproveDashboard(w, r)
+		case strings.HasSuffix(r.URL.Path, "/reject") && r.Method == http.MethodPost:
+			approvalsH.RejectDashboard(w, r)
+		default:
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		}
 	})
 
 	// ── OpenClaw Daemon Control routes ────────────────────────────────────────
@@ -568,6 +600,44 @@ func main() {
 			return
 		}
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+	mux.HandleFunc("/api/security/internal/tools/openclaw/commands", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			internalToolsH.ListOpenClawCommands(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+	mux.HandleFunc("/api/security/internal/tools/openclaw/run", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			internalToolsH.RunOpenClawCommand(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+	mux.HandleFunc("/api/security/internal/tools/approvals/request", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			internalToolsH.CreateApprovalRequest(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+	mux.HandleFunc("/api/security/internal/tools/approvals", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			internalToolsH.ListInternalApprovals(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+	mux.HandleFunc("/api/security/internal/tools/approvals/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/approve") && r.Method == http.MethodPost:
+			internalToolsH.ApproveInternal(w, r)
+		case strings.HasSuffix(r.URL.Path, "/reject") && r.Method == http.MethodPost:
+			internalToolsH.RejectInternal(w, r)
+		default:
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		}
 	})
 
 	// ── Provider Config routes ─────────────────────────────────────────────────

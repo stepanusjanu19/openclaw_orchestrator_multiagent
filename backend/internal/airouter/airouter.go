@@ -31,6 +31,7 @@ type Status struct {
 	RequireLoopback  bool      `json:"require_loopback"`
 	AllowCloud       bool      `json:"allow_cloud"`
 	TokenConfigured  bool      `json:"token_configured"`
+	TokenSource      string    `json:"token_source"`
 	ToolCallsAllowed bool      `json:"tool_calls_allowed"`
 	RuntimeTool      string    `json:"runtime_tool,omitempty"`
 	RuntimeActive    bool      `json:"runtime_active"`
@@ -118,7 +119,7 @@ func ProbeRuntimeStatus(baseCfg *config.Config, provider, baseURL string) Status
 	cfg.AIRouterEnabled = true
 	cfg.AIRouterProvider = provider
 	cfg.AIRouterBaseURL = baseURL
-	cfg.AIRouterToken = ""
+	cfg.AIRouterToken = strings.TrimSpace(baseCfg.AIRouterToken)
 	cfg.AIRouterRequireLoopback = true
 	cfg.AIRouterAllowCloud = false
 	cfg.AIRouterAllowToolCalls = false
@@ -136,6 +137,7 @@ func probeStatus(cfg *config.Config, agentRoutingEnabled bool, runtimeTool strin
 		RequireLoopback:  cfg.AIRouterRequireLoopback,
 		AllowCloud:       cfg.AIRouterAllowCloud,
 		TokenConfigured:  strings.TrimSpace(cfg.AIRouterToken) != "",
+		TokenSource:      tokenSource(cfg.AIRouterToken),
 		ToolCallsAllowed: cfg.AIRouterAllowToolCalls,
 		RuntimeTool:      runtimeTool,
 		RuntimeActive:    runtimeActive,
@@ -198,6 +200,13 @@ func probeStatus(cfg *config.Config, agentRoutingEnabled bool, runtimeTool strin
 	status.ModelCount = len(status.Models)
 	status.RuntimeSupported = true
 	return status
+}
+
+func tokenSource(token string) string {
+	if strings.TrimSpace(token) == "" {
+		return "missing"
+	}
+	return "config"
 }
 
 func routeTarget(aiRouterEnabled bool) string {

@@ -7,7 +7,8 @@ import { escapeHTML } from '../utils/dom.js';
 export class GatewayPage {
   private container: HTMLDivElement;
   private gateways: Gateway[] = [];
-  private activeAgents: AgentInfo[] = [];
+  private registeredAgents: AgentInfo[] = [];
+  private runningAgents: AgentInfo[] = [];
   private loading = false;
 
   constructor() {
@@ -35,7 +36,8 @@ export class GatewayPage {
         api.listAgents()           // returns AgentInfo[] directly
       ]);
       this.gateways = gateways;
-      this.activeAgents = agents.filter(agent => agent.status?.running);
+      this.registeredAgents = agents;
+      this.runningAgents = agents.filter(agent => agent.status?.running);
     } catch (err: any) {
       showToast(err.message || 'Gagal load gateway data', 'error');
     } finally {
@@ -68,7 +70,27 @@ export class GatewayPage {
         .filter(gw => gw.active && !gw.expired && gw.platform.toLowerCase() === 'http')
         .map(gw => gw.agent_id)
     );
-    return this.activeAgents.filter(agent => !occupiedAgentIds.has(agent.id));
+    return this.runningAgents.filter(agent => agent.gateway_eligible !== false && agent.id !== 'main' && !occupiedAgentIds.has(agent.id));
+  }
+
+  private gatewayAvailability(gw: Gateway): { label: string; className: string } {
+    const reason = gw.availability_reason || (gw.expired ? 'expired' : gw.active ? 'available' : 'inactive');
+    switch (reason) {
+      case 'available':
+        return { label: 'available / running', className: 'running' };
+      case 'agent_stopped':
+        return { label: 'agent stopped', className: 'stopped' };
+      case 'agent_unregistered':
+        return { label: 'agent unregistered', className: 'stopped' };
+      case 'reserved_main':
+        return { label: 'main reserved', className: 'stopped' };
+      case 'expired':
+        return { label: 'expired', className: 'stopped' };
+      case 'inactive':
+        return { label: 'inactive', className: 'stopped' };
+      default:
+        return { label: reason.replace(/_/g, ' '), className: gw.runtime_available ? 'running' : 'stopped' };
+    }
   }
 
   private render() {
@@ -92,6 +114,7 @@ export class GatewayPage {
           const sUrl = escapeHTML(gw.webhook_url);
           const sAuth = escapeHTML(gw.auth_mode || (gw.public ? 'public' : 'signature'));
           const expires = gw.expires_at ? new Date(gw.expires_at).toLocaleString() : '-';
+          const availability = this.gatewayAvailability(gw);
           const policy = gw.auth_mode === 'public-restricted'
             ? 'TTL + visitor intelligence + risk scoring'
             : gw.auth_mode === 'hmac-sha256'
@@ -108,6 +131,7 @@ export class GatewayPage {
               <strong>${sLabel}</strong>
               <code>ID: ${sId}</code>
               <span class="${gw.expired ? 'text-danger' : ''}">Auth: ${sAuth} · Expires: ${escapeHTML(expires)}</span>
+              <span>Runtime: <span class="status-badge ${availability.className}">${escapeHTML(availability.label)}</span></span>
               <span>Policy: ${escapeHTML(policy)}</span>
             </div>
             <div class="gateway-agent">
@@ -132,7 +156,7 @@ export class GatewayPage {
         <div class="page-title">
           <span class="page-eyebrow">Webhook relay</span>
           <h1>Gateway Manager</h1>
-          <p>Sambungkan agent aktif ke platform eksternal seperti WhatsApp atau webhook.</p>
+          <p>Sambungkan agent running ke platform eksternal seperti WhatsApp atau webhook.</p>
         </div>
         <button id="btn-add-gw" class="btn btn-primary page-primary-action" ${this.loading ? 'disabled' : ''}>Tambah Gateway</button>
       </div>
@@ -150,13 +174,17 @@ export class GatewayPage {
 
     // Attach events
     this.container.querySelector('#btn-add-gw')?.addEventListener('click', () => {
-      if (this.activeAgents.length === 0) {
-        showToast('Minimal harus ada 1 agent sebelum membuat Gateway', 'error');
+      if (this.registeredAgents.length === 0) {
+        showToast('Belum ada agent terdaftar untuk membuat gateway.', 'error');
+        return;
+      }
+      if (this.runningAgents.length === 0) {
+        showToast('Tidak ada agent running yang tersedia untuk membuat gateway. Start agent terlebih dahulu.', 'error', 6000);
         return;
       }
       const availableAgents = this.getHttpAvailableAgents();
       if (availableAgents.length === 0) {
-        showToast('Semua agent aktif sudah memiliki HTTP gateway aktif. Hapus gateway lama atau tunggu expired sebelum membuat webhook baru.', 'error', 6000);
+        showToast('Semua agent running sudah memiliki HTTP gateway aktif. Hapus gateway lama atau tunggu expired sebelum membuat webhook baru.', 'error', 6000);
         return;
       }
       const modal = new AddGatewayModal(availableAgents, () => this.fetchData());

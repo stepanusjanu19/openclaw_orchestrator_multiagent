@@ -133,6 +133,12 @@ type agentModelRouteJSON struct {
 }
 
 var validAgentIDPattern = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
+var allowedRuntimeEnvUpdates = map[string]bool{
+	"AI_ROUTER_ENABLED":  true,
+	"AI_ROUTER_PROVIDER": true,
+	"AI_ROUTER_BASE_URL": true,
+	"AI_ROUTER_TOKEN":    true,
+}
 var configSecretPattern = regexp.MustCompile(`(?i)(authorization|api[_-]?key|access[_-]?token|auth[_-]?token|gateway[_-]?token|password|secret|telegram[_-]?bot[_-]?token)(["'\s:=]+)([^"',\s}]+)`)
 var telegramTokenPattern = regexp.MustCompile(`\b\d{6,12}:[A-Za-z0-9_-]{30,}\b`)
 
@@ -197,6 +203,81 @@ func Load(credentialsDir string) (*Config, error) {
 		FrontendOrigin:              getEnv(envMap, "FRONTEND_ORIGIN", "http://localhost:5173"),
 	}
 	return cfg, nil
+}
+
+// UpdateEnvValues updates credentials/.env while preserving unrelated lines.
+func UpdateEnvValues(credentialsDir string, updates map[string]string) error {
+	for key := range updates {
+		if !allowedRuntimeEnvUpdates[key] {
+			return fmt.Errorf("update env key tidak diizinkan: %s", key)
+		}
+	}
+
+	envPath := filepath.Join(credentialsDir, ".env")
+	data, err := os.ReadFile(envPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("gagal baca %s: %w", envPath, err)
+	}
+
+	lines := []string{}
+	if len(data) > 0 {
+		lines = strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+		if len(lines) > 0 && lines[len(lines)-1] == "" {
+			lines = lines[:len(lines)-1]
+		}
+	}
+
+	seen := make(map[string]bool, len(updates))
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || !strings.Contains(trimmed, "=") {
+			continue
+		}
+		key := strings.TrimSpace(strings.SplitN(trimmed, "=", 2)[0])
+		if value, ok := updates[key]; ok {
+			lines[i] = key + "=" + sanitizeEnvFileValue(value)
+			seen[key] = true
+		}
+	}
+
+	orderedKeys := []string{
+		"AI_ROUTER_ENABLED",
+		"AI_ROUTER_PROVIDER",
+		"AI_ROUTER_BASE_URL",
+		"AI_ROUTER_TOKEN",
+	}
+	for _, key := range orderedKeys {
+		if value, ok := updates[key]; ok && !seen[key] {
+			lines = append(lines, key+"="+sanitizeEnvFileValue(value))
+			seen[key] = true
+		}
+	}
+	for key, value := range updates {
+		if !seen[key] {
+			lines = append(lines, key+"="+sanitizeEnvFileValue(value))
+		}
+	}
+
+	tmpPath := envPath + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
+		return fmt.Errorf("gagal tulis %s: %w", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, envPath); err != nil {
+		return fmt.Errorf("gagal replace %s: %w", envPath, err)
+	}
+	return nil
+}
+
+func sanitizeEnvFileValue(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, "\n", " ")
+	value = strings.ReplaceAll(value, "\r", " ")
+	if value == "" || strings.ContainsAny(value, " #\t\"'") {
+		escaped := strings.ReplaceAll(value, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+		return `"` + escaped + `"`
+	}
+	return value
 }
 
 func AgentRegistryPath(credentialsDir string) string {
@@ -278,7 +359,7 @@ func LoadAgentCredsWithReport(credentialsDir string) (map[string]*AgentCred, Age
 	}
 
 	if os.IsNotExist(err) {
-		mainCred := &AgentCred{ID: "main", Label: "main", OpenClawModel: "openclaw/main"}
+		mainCred := &AgentCred{ID: "main", Label: "Main Agent", OpenClawModel: "openclaw/main"}
 		defaultCreds := map[string]*AgentCred{"main": mainCred}
 		if writeErr := writeAgentRegistryFile(credentialsDir, agentCredsToRegistry(defaultCreds)); writeErr != nil {
 			return nil, report, fmt.Errorf("gagal buat registry default: %w", writeErr)

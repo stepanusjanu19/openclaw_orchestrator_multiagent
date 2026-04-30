@@ -555,6 +555,9 @@ export class Dashboard {
 
   private renderOrchestratorPanel(container: HTMLDivElement, mainInfo: AgentInfo) {
     const running = mainInfo.status?.running ?? false;
+    const canStart = mainInfo.can_start ?? mainInfo.has_token;
+    const startTitle = mainInfo.start_block_reason || 'Start Main Agent';
+    const modelLabel = escapeHTML(mainInfo.model || 'openclaw/main');
     container.innerHTML = `
       <div style="
         background: linear-gradient(135deg, rgba(108,99,255,0.12) 0%, rgba(16,185,129,0.08) 100%);
@@ -579,17 +582,17 @@ export class Dashboard {
               </span>
             </div>
             <div style="font-size:0.75rem;color:var(--clr-text-muted);margin-top:3px;">
-              Model: <code>${escapeHTML(mainInfo.model || '(default)')}</code>
+              Model: <button class="agent-model btn-model-edit" id="orch-model-btn" title="Ganti model" style="border:0;cursor:pointer;">${modelLabel}</button>
               ${mainInfo.status?.pid ? `· PID <code>${mainInfo.status.pid}</code>` : ''}
             </div>
           </div>
           <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
             ${running
               ? `<button class="btn btn-sm" id="orch-stop-btn" style="background:rgba(239,68,68,0.15);color:var(--clr-danger);border:1px solid rgba(239,68,68,0.3);">⏹ Stop</button>`
-              : `<button class="btn btn-sm btn-primary" id="orch-start-btn">▶ Start</button>`
+              : `<button class="btn btn-sm btn-primary" id="orch-start-btn" ${canStart ? '' : 'disabled'} title="${escapeHTML(startTitle)}">▶ Start</button>`
             }
+            <button class="btn btn-ghost btn-sm" id="orch-token-btn" title="Update Telegram bot token">${mainInfo.has_token ? '🔑 Update Bot' : '🔑 Configure Bot'}</button>
             <button class="btn btn-ghost btn-sm" id="orch-workspace-btn" title="Kelola Workspace">🗂️ Workspace</button>
-            <button class="btn btn-ghost btn-sm btn-model-edit" id="orch-model-btn" title="Ganti model">✏️</button>
             <button class="btn btn-ghost btn-sm" id="orch-soul-btn" title="Update SOUL.md dengan daftar sub-agent terkini">🔄 Sync SOUL</button>
           </div>
         </div>
@@ -604,6 +607,7 @@ export class Dashboard {
     // Wire up buttons
     container.querySelector('#orch-start-btn')?.addEventListener('click', () => this.handleStart('main'));
     container.querySelector('#orch-stop-btn')?.addEventListener('click', () => this.handleStop('main'));
+    container.querySelector('#orch-token-btn')?.addEventListener('click', () => this.handleUpdateToken('main'));
     container.querySelector('#orch-workspace-btn')?.addEventListener('click', () => this.openWorkspaceEditor('main', mainInfo.label || 'Main Orchestrator'));
     container.querySelector('#orch-model-btn')?.addEventListener('click', () => this.handleUpdateModel('main', mainInfo.model));
     container.querySelector('#orch-soul-btn')?.addEventListener('click', () => this.handleSyncOrchestratorSOUL());
@@ -734,8 +738,9 @@ export class Dashboard {
     const pid = info.status.pid;
     const startedAt = info.status.started_at ? new Date(info.status.started_at).toLocaleTimeString('id-ID') : '—';
     const runtimeWarning = info.status.runtime_stale
-      ? escapeHTML(info.status.runtime_warning || 'Agent runtime stale, restart agent.')
+      ? escapeHTML(info.status.runtime_warning || 'Agent memakai runtime/env lama. Stop lalu start ulang agent agar router/token terbaru dipakai.')
       : '';
+    const statusText = running && info.status.runtime_stale ? 'Restart required' : running ? 'Running' : 'Stopped';
     const cleanId = escapeHTML(info.id);
     const cleanLabel = escapeHTML(info.label);
     const cleanModel = escapeHTML(info.model);
@@ -755,14 +760,14 @@ export class Dashboard {
       </div>
       <div class="col-status">
         <span class="status-badge ${running ? 'running' : 'stopped'}">
-          <span class="dot"></span>${running ? 'Running' : 'Stopped'}
+          <span class="dot"></span>${statusText}
         </span>
         ${running ? `<span style="font-size:0.7rem;color:var(--clr-text-muted);margin-left:6px">${startedAt}</span>` : ''}
         ${runtimeWarning ? `<span class="token-warn-badge" title="${runtimeWarning}" style="margin-left:6px">stale</span>` : ''}
       </div>
       <div class="col-pid" style="font-family:var(--font-mono);font-size:0.8rem;color:var(--clr-text-muted)">${running && pid ? pid : '—'}</div>
       <div class="col-actions">
-        <button class="btn btn-success btn-sm" id="row-start-${info.id}" ${running || !info.has_token ? 'disabled' : ''}>▶</button>
+        <button class="btn btn-success btn-sm" id="row-start-${info.id}" ${running || !(info.can_start ?? info.has_token) ? 'disabled' : ''} title="${escapeHTML(info.start_block_reason || 'Start agent')}">▶</button>
         <button class="btn btn-danger btn-sm" id="row-stop-${info.id}" ${!running ? 'disabled' : ''}>■</button>
         <button class="btn btn-ghost btn-sm" id="row-logs-${info.id}" title="Logs">📋</button>
         <button class="btn btn-ghost btn-sm" id="row-persona-${info.id}" title="Kelola Workspace">🗂️</button>
@@ -826,6 +831,11 @@ export class Dashboard {
 
   private async handleStart(agentId: string) {
     if (this.busyAgents.has(agentId)) return;
+    const agent = this.agents.find(a => a.id === agentId);
+    if (agent && !(agent.can_start ?? agent.has_token)) {
+      showToast(agent.start_block_reason || 'Agent belum bisa distart', 'error');
+      return;
+    }
     this.busyAgents.add(agentId);
     const startBtn = this.agentListEl.querySelector<HTMLButtonElement>(`#row-start-${agentId}`);
     if (startBtn) { startBtn.disabled = true; startBtn.innerHTML = '<span class="loading-spinner"></span>'; }
@@ -843,6 +853,23 @@ export class Dashboard {
       showToast(`Gagal start: ${err instanceof Error ? err.message : err}`, 'error');
     } finally {
       this.busyAgents.delete(agentId);
+    }
+  }
+
+  private async handleUpdateToken(agentId: string) {
+    const token = window.prompt(`Masukkan Telegram bot token untuk ${agentId}`);
+    if (token === null) return;
+    const trimmed = token.trim();
+    if (!trimmed) {
+      showToast('Bot token tidak boleh kosong', 'error');
+      return;
+    }
+    try {
+      const res = await api.updateAgentToken(agentId, trimmed);
+      showToast(res.message, 'success');
+      await this.loadAgents();
+    } catch (err: unknown) {
+      showToast(`Gagal update token: ${err instanceof Error ? err.message : err}`, 'error');
     }
   }
 

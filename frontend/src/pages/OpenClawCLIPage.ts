@@ -1,4 +1,4 @@
-import { api, type OpenClawCommand, type OpenClawCommandRunResult } from '../api/client.js';
+import { api, type ApprovalRequest, type OpenClawCommand, type OpenClawCommandRunResult } from '../api/client.js';
 import { showToast } from '../components/Toast.js';
 
 function escapeHTML(value: string): string {
@@ -27,6 +27,7 @@ export class OpenClawCLIPage {
   private searchEl!: HTMLInputElement;
   private categoryEl!: HTMLSelectElement;
   private commands: OpenClawCommand[] = [];
+  private approvals: ApprovalRequest[] = [];
   private selectedId = '';
   private outputEl!: HTMLPreElement;
 
@@ -40,6 +41,7 @@ export class OpenClawCLIPage {
 
   async mount() {
     await this.loadCommands();
+    await this.loadApprovals();
   }
 
   unmount() {}
@@ -71,6 +73,16 @@ export class OpenClawCLIPage {
       this.render();
     } catch (err: unknown) {
       this.contentEl.innerHTML = `<div class="error-box">Gagal memuat command map: ${escapeHTML(err instanceof Error ? err.message : String(err))}</div>`;
+    }
+  }
+
+  private async loadApprovals() {
+    try {
+      const res = await api.listApprovals('pending');
+      this.approvals = res.approvals ?? [];
+      this.renderApprovalPanel();
+    } catch {
+      this.approvals = [];
     }
   }
 
@@ -174,6 +186,7 @@ export class OpenClawCLIPage {
         </form>
         <pre id="oc-cli-output" class="oc-cli-output"></pre>
       </div>
+      <div id="oc-cli-approvals"></div>
     `;
     this.outputEl = detail.querySelector<HTMLPreElement>('#oc-cli-output')!;
     detail.querySelector<HTMLButtonElement>('#oc-cli-clear')!.addEventListener('click', () => {
@@ -187,6 +200,64 @@ export class OpenClawCLIPage {
       this.outputEl.textContent = cmd.safety === 'blocked'
         ? 'Blocked by dashboard policy. Jalankan manual dari terminal jika benar-benar diperlukan.'
         : 'Command ini belum memiliki runner aman di dashboard.';
+    }
+    this.renderApprovalPanel();
+  }
+
+  private renderApprovalPanel() {
+    const mount = this.contentEl?.querySelector<HTMLDivElement>('#oc-cli-approvals');
+    if (!mount) return;
+    mount.innerHTML = `
+      <div class="oc-cli-detail-card" style="margin-top:12px;">
+        <div class="oc-cli-detail-head">
+          <div class="oc-cli-detail-title">
+            <div class="oc-cli-detail-path">Approval Requests</div>
+            <div class="oc-cli-detail-description">Fallback dashboard untuk request action dari sub-agent.</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" id="approval-refresh" type="button">Refresh</button>
+        </div>
+        <div class="oc-cli-list" style="max-height:280px;overflow:auto;">
+          ${this.approvals.length ? this.approvals.map(item => this.renderApprovalItem(item)).join('') : '<div class="oc-cli-empty">Tidak ada approval pending.</div>'}
+        </div>
+      </div>
+    `;
+    mount.querySelector('#approval-refresh')?.addEventListener('click', () => this.loadApprovals());
+    mount.querySelectorAll<HTMLButtonElement>('[data-approval-action]').forEach(btn => {
+      btn.addEventListener('click', () => this.handleApproval(btn.dataset.approvalAction || '', btn.dataset.approvalId || ''));
+    });
+  }
+
+  private renderApprovalItem(item: ApprovalRequest): string {
+    const args = item.args_preview ? Object.entries(item.args_preview).map(([k, v]) => `${escapeHTML(k)}=${escapeHTML(v)}`).join(', ') : '';
+    return `
+      <div class="oc-cli-command" style="display:block;text-align:left;">
+        <div class="oc-cli-command-copy">
+          <span class="oc-cli-command-path">${escapeHTML(item.command_id || item.tool_name)}</span>
+          <span class="oc-cli-command-category">${escapeHTML(item.requesting_agent_id)} · ${escapeHTML(item.risk_level)} · ${escapeHTML(item.status)}</span>
+        </div>
+        ${item.reason ? `<div class="oc-cli-detail-description" style="margin-top:6px;">${escapeHTML(item.reason)}</div>` : ''}
+        ${args ? `<div class="oc-cli-meta" style="margin-top:6px;"><span>Args <code>${args}</code></span></div>` : ''}
+        <div class="oc-cli-actions" style="margin-top:8px;">
+          <button class="btn btn-primary btn-sm" data-approval-action="approve" data-approval-id="${escapeHTML(item.id)}">Approve</button>
+          <button class="btn btn-ghost btn-sm" data-approval-action="reject" data-approval-id="${escapeHTML(item.id)}">Reject</button>
+        </div>
+      </div>
+    `;
+  }
+
+  private async handleApproval(action: string, id: string) {
+    if (!id) return;
+    try {
+      if (action === 'approve') {
+        await api.approveApproval(id);
+        showToast('Approval dieksekusi', 'success');
+      } else {
+        await api.rejectApproval(id);
+        showToast('Approval ditolak', 'info');
+      }
+      await this.loadApprovals();
+    } catch (err: unknown) {
+      showToast(`Approval gagal: ${err instanceof Error ? err.message : err}`, 'error');
     }
   }
 

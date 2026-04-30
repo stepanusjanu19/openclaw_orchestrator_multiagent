@@ -47,7 +47,12 @@ export interface AgentStatus {
 
 export interface AgentInfo {
   id: string; label: string; model: string;
-  has_token: boolean; status: AgentStatus;
+  has_token: boolean;
+  is_main?: boolean;
+  gateway_eligible?: boolean;
+  can_start?: boolean;
+  start_block_reason?: string;
+  status: AgentStatus;
 }
 
 export interface HealthInfo {
@@ -78,6 +83,7 @@ export interface RouterStatus {
   require_loopback: boolean;
   allow_cloud: boolean;
   token_configured: boolean;
+  token_source: 'config' | 'runtime' | 'missing' | string;
   tool_calls_allowed: boolean;
   runtime_tool?: string;
   runtime_active: boolean;
@@ -224,6 +230,23 @@ export interface OpenClawCommandRunResult {
   error?: string;
 }
 
+export interface ApprovalRequest {
+  id: string;
+  requesting_agent_id: string;
+  action_type: string;
+  tool_name: string;
+  command_id?: string;
+  args_preview?: Record<string, string>;
+  risk_level: string;
+  reason?: string;
+  status: 'pending' | 'approved' | 'rejected' | 'executed' | 'expired' | string;
+  decision_by?: string;
+  created_at: string;
+  expires_at: string;
+  decided_at?: string;
+  result?: OpenClawCommandRunResult;
+}
+
 // Orchestrator types
 export interface SubAgentInfo {
   id: string; label: string; model: string;
@@ -252,6 +275,10 @@ export interface Gateway {
   expires_at?: string;
   expired?: boolean;
   created_at: string;
+  agent_registered?: boolean;
+  agent_running?: boolean;
+  runtime_available?: boolean;
+  availability_reason?: 'available' | 'agent_stopped' | 'agent_unregistered' | 'expired' | 'inactive' | string;
 }
 
 export interface CreateGatewayPayload {
@@ -444,6 +471,13 @@ export const api = {
     return request('/api/agents', { method: 'POST', body: JSON.stringify(payload) });
   },
 
+  updateAgentToken(id: string, telegramBotToken: string): Promise<{ message: string; has_token: boolean }> {
+    return request(`/api/agents/${id}/token`, {
+      method: 'PUT',
+      body: JSON.stringify({ telegram_bot_token: telegramBotToken }),
+    });
+  },
+
   deleteAgent(id: string): Promise<{ message: string }> {
     return request(`/api/agents/${id}`, { method: 'DELETE' });
   },
@@ -496,6 +530,12 @@ export const api = {
     const query = tool ? `?tool=${encodeURIComponent(tool)}` : '';
     return request(`/api/router/status${query}`);
   },
+  activateRouterAgentRouting(tool: string): Promise<{ message: string; provider: string; base_url: string; token_configured: boolean; token_source: string; agent_routing_enabled: boolean; restart_agents_required: boolean; models: number }> {
+    return request('/api/router/activate', {
+      method: 'POST',
+      body: JSON.stringify({ tool }),
+    });
+  },
   importOCAgent(id: string): Promise<{ agent: DetectedAgent; message: string }> {
     return request(`/api/openclaw/import/${id}`, { method: 'POST' });
   },
@@ -520,6 +560,16 @@ export const api = {
     if (data) return data;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     throw new Error('Response kosong');
+  },
+  listApprovals(status = 'pending'): Promise<{ approvals: ApprovalRequest[] }> {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+    return request(`/api/approvals${qs}`);
+  },
+  approveApproval(id: string): Promise<ApprovalRequest> {
+    return request(`/api/approvals/${id}/approve`, { method: 'POST' });
+  },
+  rejectApproval(id: string): Promise<ApprovalRequest> {
+    return request(`/api/approvals/${id}/reject`, { method: 'POST' });
   },
 
   // Model Management

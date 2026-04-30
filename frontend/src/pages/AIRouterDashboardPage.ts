@@ -18,6 +18,14 @@ function isRouterTool(tool: string): tool is RouterToolID {
   return tool === '9router' || tool === 'omniroute';
 }
 
+function isRouterHealthy(status: RouterStatus | null | undefined): boolean {
+  return Boolean(status?.runtime_active && status.reachable && !status.error);
+}
+
+function hasRouterModels(status: RouterStatus | null | undefined): boolean {
+  return Boolean((status?.model_count ?? 0) > 0 || (status?.models?.length ?? 0) > 0);
+}
+
 function formatCheckedAt(value?: string): string {
   if (!value) return 'waiting';
   const date = new Date(value);
@@ -142,8 +150,17 @@ export class AIRouterDashboardPage {
     const notices = [...(routerStatus?.security_notices ?? active.security_notices ?? [])];
     if (routerStatus?.error) warnings.push(routerStatus.error);
     if (this.routerStatusError) warnings.push(this.routerStatusError);
+    if (routerStatus?.token_source === 'runtime') {
+      notices.push('API key router ditemukan dari runtime. Klik Use for Agent Routing untuk menyimpan konfigurasi, lalu restart agent yang berjalan.');
+    }
     const agentRoutingEnabled = routerStatus?.agent_routing_enabled ?? false;
-    const runtimeActiveLabel = routerStatus?.runtime_active === false ? 'not confirmed' : 'yes';
+    const routerHealthy = isRouterHealthy(routerStatus);
+    const routerActivatable = routerHealthy && hasRouterModels(routerStatus);
+    const managedProcess = active.running && active.managed !== false && active.control_state !== 'unmanaged_running';
+    const runtimeActiveLabel = routerHealthy ? 'reachable' : routerStatus?.runtime_active === false ? 'unavailable' : 'not reachable';
+    const headerState = routerHealthy ? 'Running' : 'Runtime unavailable';
+    const badgeClass = routerHealthy ? 'running' : 'stopped';
+    const badgeText = routerHealthy ? 'Private loopback' : 'Router off';
     const binaryTrusted = routerStatus?.binary_trusted ?? active.binary_trusted ?? false;
     const runtimeIsolated = routerStatus?.runtime_isolated ?? active.runtime_isolated ?? false;
     const loopbackEnforced = routerStatus?.loopback_enforced ?? active.loopback_enforced ?? false;
@@ -161,9 +178,9 @@ export class AIRouterDashboardPage {
           <div class="ai-router-head">
             <div class="ai-router-brand">
               <span style="--router-accent:${ROUTER_ACCENTS[this.activeTool]}">${escapeHTML(ROUTER_LABELS[this.activeTool])}</span>
-              <strong>Running</strong>
+              <strong>${escapeHTML(headerState)}</strong>
             </div>
-            <span class="status-badge running"><span class="dot"></span>Private loopback</span>
+            <span class="status-badge ${badgeClass}"><span class="dot"></span>${escapeHTML(badgeText)}</span>
           </div>
 
           <div class="ai-router-stat-grid">
@@ -174,8 +191,9 @@ export class AIRouterDashboardPage {
           </div>
 
           <div class="ai-router-meta">
-            <span>Router running <code>${runtimeActiveLabel}</code></span>
+            <span>Router health <code>${runtimeActiveLabel}</code></span>
             <span>Agent routing <code>${agentRoutingEnabled ? 'enabled' : 'not enabled'}</code></span>
+            <span>Router token <code>${escapeHTML(routerStatus?.token_source ?? (routerStatus?.token_configured ? 'config' : 'missing'))}</code></span>
             <span>Route target <code>${escapeHTML(routerStatus?.route_target ?? 'ai_router')}</code></span>
             <span>Runtime support <code>${routerStatus?.runtime_supported ? 'ready' : 'needs setup'}</code></span>
             <span>OpenClaw/Gateway/Webhook <code>unaffected</code></span>
@@ -194,6 +212,10 @@ export class AIRouterDashboardPage {
           ${agentRoutingEnabled ? `
             <div class="ai-router-runtime-note">
               Agent routing enabled by config. Restart agent yang sedang berjalan agar perubahan routing diterapkan; OpenClaw Gateway, relay webhook, Visitor, dan Gateway tetap terisolasi.
+            </div>
+          ` : !routerHealthy ? `
+            <div class="ai-router-runtime-note">
+              Router process belum reachable. Refresh atau start ulang runtime dari Code Tools sebelum mengaktifkan agent routing.
             </div>
           ` : `
             <div class="ai-router-runtime-note">
@@ -215,9 +237,10 @@ export class AIRouterDashboardPage {
 
           <div class="ai-router-actions">
             <button class="btn btn-primary" id="btn-router-copy">Copy Endpoint</button>
+            ${agentRoutingEnabled || !routerActivatable ? '' : '<button class="btn btn-primary" id="btn-router-activate">Use for Agent Routing</button>'}
             <button class="btn btn-ghost" id="btn-router-models">Open /models</button>
             <button class="btn btn-ghost" id="btn-router-reload">Refresh</button>
-            <button class="btn btn-ghost" id="btn-router-stop" style="color:var(--clr-danger)">Stop Router</button>
+            ${managedProcess ? '<button class="btn btn-ghost" id="btn-router-stop" style="color:var(--clr-danger)">Stop Router</button>' : ''}
           </div>
         </section>
 
@@ -251,12 +274,20 @@ export class AIRouterDashboardPage {
       });
     });
     this.bodyEl.querySelector('#btn-router-copy')?.addEventListener('click', () => this.copyEndpoint(active));
+    this.bodyEl.querySelector('#btn-router-activate')?.addEventListener('click', () => this.activateAgentRouting());
     this.bodyEl.querySelector('#btn-router-models')?.addEventListener('click', () => this.openModels(active));
     this.bodyEl.querySelector('#btn-router-reload')?.addEventListener('click', () => this.load());
     this.bodyEl.querySelector('#btn-router-stop')?.addEventListener('click', () => this.stopActiveRouter());
 
     this.logEl = this.bodyEl.querySelector<HTMLPreElement>('#ai-router-log');
-    this.startLogStream(this.activeTool);
+    if (managedProcess) {
+      this.startLogStream(this.activeTool);
+    } else {
+      this.closeLogStream();
+      if (this.logEl) {
+        this.logEl.textContent = `[${this.activeTool}] Managed log stream tidak aktif.\n`;
+      }
+    }
   }
 
   private routerTab(status: CodeToolStatus): string {
@@ -330,6 +361,32 @@ export class AIRouterDashboardPage {
       await this.load();
     } catch (err: unknown) {
       showToast(`Gagal stop ${label}: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    }
+  }
+
+  private async activateAgentRouting() {
+    if (!this.activeTool) return;
+    const label = ROUTER_LABELS[this.activeTool];
+    if (!isRouterHealthy(this.routerStatus) || !hasRouterModels(this.routerStatus)) {
+      showToast('Router belum reachable atau model inventory masih kosong. Refresh/start ulang router terlebih dahulu.', 'error', 7000);
+      return;
+    }
+    const btn = this.bodyEl.querySelector<HTMLButtonElement>('#btn-router-activate');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Activating...';
+    }
+    try {
+      const res = await api.activateRouterAgentRouting(this.activeTool);
+      showToast(`${res.message}. Restart running agents required.`, 'success', 7000);
+      window.dispatchEvent(new CustomEvent('openclaw:router-status-changed', { detail: { lifecycle: 'activate', tool: this.activeTool } }));
+      await this.load();
+    } catch (err: unknown) {
+      showToast(`Gagal aktifkan ${label}: ${err instanceof Error ? err.message : String(err)}`, 'error', 7000);
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Use for Agent Routing';
+      }
     }
   }
 

@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"multiagent-platform/internal/config"
 	"multiagent-platform/internal/gateway"
 	"multiagent-platform/internal/security"
 )
@@ -31,10 +32,17 @@ type GatewayHandler struct {
 	App          *App
 	GwManager    *gateway.Manager
 	PublicURL    string // Diambil dari env atau config, fallback ke localhost jika kosong
+	CredsGetter  func() map[string]*config.AgentCred
 	seenMu       sync.Mutex
 	seenEvents   map[string]time.Time
 	inflightMu   sync.Mutex
 	inflightByID map[string]int
+}
+
+type gatewayAgentAvailability struct {
+	Registered bool
+	Running    bool
+	Reserved   bool
 }
 
 var gatewayLabelPattern = regexp.MustCompile(`^[\p{L}\p{N} _\-.]{1,64}$`)
@@ -54,19 +62,27 @@ func (h *GatewayHandler) GetGateways(w http.ResponseWriter, r *http.Request) {
 	list := h.GwManager.List(agentID)
 
 	response := make([]map[string]interface{}, 0, len(list))
+	now := time.Now()
+	creds := h.credsSnapshot()
 	for _, g := range list {
+		expired := g.Expired(now)
+		availability := h.gatewayAvailability(g, expired, creds)
 		response = append(response, map[string]interface{}{
-			"id":          g.ID,
-			"agent_id":    g.AgentID,
-			"platform":    g.Platform,
-			"label":       g.Label,
-			"webhook_url": g.WebhookURL(h.PublicURL),
-			"active":      g.Active,
-			"expires_at":  g.ExpiresAt,
-			"expired":     g.Expired(time.Now()),
-			"public":      strings.EqualFold(g.Config["public"], "true"),
-			"auth_mode":   gatewayAuthMode(g),
-			"created_at":  g.CreatedAt,
+			"id":                  g.ID,
+			"agent_id":            g.AgentID,
+			"platform":            g.Platform,
+			"label":               g.Label,
+			"webhook_url":         g.WebhookURL(h.PublicURL),
+			"active":              g.Active,
+			"expires_at":          g.ExpiresAt,
+			"expired":             expired,
+			"public":              strings.EqualFold(g.Config["public"], "true"),
+			"auth_mode":           gatewayAuthMode(g),
+			"created_at":          g.CreatedAt,
+			"agent_registered":    availability.Registered,
+			"agent_running":       availability.Running,
+			"runtime_available":   availability.Available,
+			"availability_reason": availability.Reason,
 		})
 	}
 
@@ -91,11 +107,30 @@ func (h *GatewayHandler) CreateGateway(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "AgentID, Platform, dan Label wajib diisi")
 		return
 	}
+	req.AgentID = strings.ToLower(strings.TrimSpace(req.AgentID))
+	req.Platform = strings.ToLower(strings.TrimSpace(req.Platform))
+	req.Label = strings.TrimSpace(req.Label)
+	if !validAgentID.MatchString(req.AgentID) {
+		jsonError(w, http.StatusBadRequest, "Agent ID tidak valid")
+		return
+	}
+	if isReservedGatewayAgent(req.AgentID) {
+		jsonError(w, http.StatusBadRequest, "Main Agent tidak bisa dipakai untuk Gateway")
+		return
+	}
+	agentStatus := h.agentAvailability(req.AgentID)
+	if !agentStatus.Registered {
+		jsonError(w, http.StatusNotFound, "agent tidak terdaftar: "+req.AgentID)
+		return
+	}
+	if !agentStatus.Running {
+		jsonError(w, http.StatusConflict, "agent harus running sebelum membuat gateway: "+req.AgentID)
+		return
+	}
 	if !gatewayLabelPattern.MatchString(req.Label) {
 		jsonError(w, http.StatusBadRequest, "Label gateway hanya boleh huruf/angka/spasi/-/_/. dan maksimal 64 karakter")
 		return
 	}
-	req.Platform = strings.ToLower(strings.TrimSpace(req.Platform))
 	if req.Config == nil {
 		req.Config = map[string]string{}
 	}
@@ -233,6 +268,12 @@ func (h *GatewayHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Gateway tidak ditemukan atau tidak aktif untuk agen ini", http.StatusNotFound)
 		return
 	}
+	if !h.agentAvailability(agentID).Running {
+		ctx := buildGatewayRequestContext(r, h.App.Cfg, verifiedGateway, nil, "", strings.EqualFold(verifiedGateway.Config["public"], "true"), nil)
+		h.auditGatewayWithMetadata(agentID, platform, "", "", "agent_off", errors.New("agent offline"), ctx, verifiedGateway)
+		http.Error(w, "Agent offline. Start agent sebelum memakai gateway ini.", http.StatusServiceUnavailable)
+		return
+	}
 
 	if platform == gateway.PlatformHTTP && len(parts) >= 4 {
 		action := parts[3]
@@ -273,6 +314,65 @@ func (h *GatewayHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Platform tidak disupport", http.StatusBadRequest)
 	}
+}
+
+type gatewayAvailabilityInfo struct {
+	Registered bool
+	Running    bool
+	Available  bool
+	Reason     string
+}
+
+func (h *GatewayHandler) agentAvailability(agentID string) gatewayAgentAvailability {
+	return h.agentAvailabilityFromCreds(agentID, h.credsSnapshot())
+}
+
+func (h *GatewayHandler) credsSnapshot() map[string]*config.AgentCred {
+	if h.CredsGetter == nil {
+		return nil
+	}
+	return h.CredsGetter()
+}
+
+func (h *GatewayHandler) agentAvailabilityFromCreds(agentID string, creds map[string]*config.AgentCred) gatewayAgentAvailability {
+	agentID = strings.ToLower(strings.TrimSpace(agentID))
+	reserved := isReservedGatewayAgent(agentID)
+	registered := true
+	if creds != nil {
+		_, registered = creds[agentID]
+	}
+	running := false
+	if registered && !reserved && h.App != nil && h.App.Manager != nil {
+		running = h.App.Manager.GetStatus(agentID).Running
+	}
+	return gatewayAgentAvailability{Registered: registered, Running: running, Reserved: reserved}
+}
+
+func (h *GatewayHandler) gatewayAvailability(g *gateway.Gateway, expired bool, creds map[string]*config.AgentCred) gatewayAvailabilityInfo {
+	agent := h.agentAvailabilityFromCreds(g.AgentID, creds)
+	info := gatewayAvailabilityInfo{
+		Registered: agent.Registered,
+		Running:    agent.Running,
+		Available:  g.Active && !expired && agent.Registered && agent.Running && !agent.Reserved,
+		Reason:     "available",
+	}
+	switch {
+	case expired:
+		info.Reason = "expired"
+	case !g.Active:
+		info.Reason = "inactive"
+	case agent.Reserved:
+		info.Reason = "reserved_main"
+	case !agent.Registered:
+		info.Reason = "agent_unregistered"
+	case !agent.Running:
+		info.Reason = "agent_stopped"
+	}
+	return info
+}
+
+func isReservedGatewayAgent(agentID string) bool {
+	return strings.EqualFold(strings.TrimSpace(agentID), "main")
 }
 
 func (h *GatewayHandler) handleHTTPGenericWebhook(w http.ResponseWriter, r *http.Request, agentID string, gw *gateway.Gateway) {

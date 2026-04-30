@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"multiagent-platform/internal/config"
+	"multiagent-platform/internal/routerruntime"
 )
 
 var validRuntimeAgentID = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
@@ -168,6 +169,21 @@ func validateEnvValue(name, value string) error {
 	return nil
 }
 
+func (m *Manager) aiRouterTokenForAgent() string {
+	token := strings.TrimSpace(m.cfg.AIRouterToken)
+	if token != "" || !m.cfg.AIRouterEnabled {
+		return token
+	}
+	provider := strings.TrimSpace(m.cfg.AIRouterProvider)
+	if provider != "9router" && provider != "omniroute" {
+		return ""
+	}
+	if token, ok := routerruntime.APIKey(provider, ""); ok {
+		return token
+	}
+	return ""
+}
+
 // Start spawn proses bot untuk agent tertentu.
 func (m *Manager) Start(cfg AgentConfig) error {
 	m.mu.Lock()
@@ -193,6 +209,7 @@ func (m *Manager) Start(cfg AgentConfig) error {
 
 	env := os.Environ()
 	ingressPort := ingressPortForAgent(cfg.ID)
+	aiRouterToken := m.aiRouterTokenForAgent()
 	env = append(env,
 		"TELEGRAM_BOT_TOKEN="+cfg.TelegramBotToken,
 		"OPENCLAW_GW_URL="+cfg.GatewayURL,
@@ -200,7 +217,7 @@ func (m *Manager) Start(cfg AgentConfig) error {
 		fmt.Sprintf("AI_ROUTER_ENABLED=%t", m.cfg.AIRouterEnabled),
 		"AI_ROUTER_PROVIDER="+m.cfg.AIRouterProvider,
 		"AI_ROUTER_BASE_URL="+m.cfg.AIRouterBaseURL,
-		"AI_ROUTER_TOKEN="+m.cfg.AIRouterToken,
+		"AI_ROUTER_TOKEN="+aiRouterToken,
 		fmt.Sprintf("AI_ROUTER_REQUIRE_LOOPBACK=%t", m.cfg.AIRouterRequireLoopback),
 		fmt.Sprintf("AI_ROUTER_ALLOW_CLOUD=%t", m.cfg.AIRouterAllowCloud),
 		"AI_ROUTER_MODEL_ALLOWLIST="+m.cfg.AIRouterModelAllowlist,

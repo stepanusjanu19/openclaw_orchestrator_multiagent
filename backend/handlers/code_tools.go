@@ -215,25 +215,42 @@ func (h *CodeToolsHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 			applyPostureToStatus(&resp, buildToolPosture(tool, "", h.App.Cfg))
 		}
 
+		removeStaleProcess := false
 		toolProcesses.RLock()
 		if tp, exists := toolProcesses.m[tool]; exists {
 			tp.mu.Lock()
-			resp.Running = tp.running
-			resp.Managed = tp.running
-			resp.ListenHost = tp.listenHost
-			resp.ListenPort = tp.listenPort
-			resp.Endpoint = tp.endpoint
-			resp.BinaryTrusted = tp.binaryTrusted
-			resp.BinaryResolvedPath = tp.binaryResolvedPath
-			resp.RuntimeIsolated = tp.runtimeIsolated
-			resp.RuntimeDir = tp.runtimeDir
-			resp.LoopbackEnforced = tp.loopbackEnforced
-			resp.ProcessGroupEnabled = tp.processGroupEnabled
-			resp.SecurityWarnings = append([]string{}, tp.securityWarnings...)
-			resp.SecurityNotices = append([]string{}, tp.securityNotices...)
+			if tp.running {
+				resp.Running = true
+				resp.Managed = true
+				resp.ListenHost = tp.listenHost
+				resp.ListenPort = tp.listenPort
+				resp.Endpoint = tp.endpoint
+				resp.BinaryTrusted = tp.binaryTrusted
+				resp.BinaryResolvedPath = tp.binaryResolvedPath
+				resp.RuntimeIsolated = tp.runtimeIsolated
+				resp.RuntimeDir = tp.runtimeDir
+				resp.LoopbackEnforced = tp.loopbackEnforced
+				resp.ProcessGroupEnabled = tp.processGroupEnabled
+				resp.SecurityWarnings = append([]string{}, tp.securityWarnings...)
+				resp.SecurityNotices = append([]string{}, tp.securityNotices...)
+			} else {
+				removeStaleProcess = true
+			}
 			tp.mu.Unlock()
 		}
 		toolProcesses.RUnlock()
+		if removeStaleProcess {
+			toolProcesses.Lock()
+			if tp, exists := toolProcesses.m[tool]; exists {
+				tp.mu.Lock()
+				stillStopped := !tp.running
+				tp.mu.Unlock()
+				if stillStopped {
+					delete(toolProcesses.m, tool)
+				}
+			}
+			toolProcesses.Unlock()
+		}
 		if routerToolSet[tool] && resp.ListenPort == 0 {
 			resp.ListenHost = routerListenHost(h.App.Cfg.AIRouterListenHost)
 			resp.ListenPort = defaultRouterPort(h.App.Cfg, tool)

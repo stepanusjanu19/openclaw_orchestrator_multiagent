@@ -49,19 +49,13 @@ func (h *OrchestratorHandler) GetOrchestratorStatus(w http.ResponseWriter, r *ht
 		status := h.App.Manager.GetStatus("main")
 		status.ID = "main"
 		status.Label = mainCred.Label
-		mainInfo = AgentInfo{
-			ID:       "main",
-			Label:    mainCred.Label,
-			Model:    mainCred.OpenClawModel,
-			HasToken: mainCred.TelegramBotToken != "" && !strings.HasPrefix(mainCred.TelegramBotToken, "GANTI"),
-			Status:   status,
-		}
+		mainInfo = agentInfoFromCred("main", mainCred, status)
 	} else {
 		// main mungkin langsung dikonfigurasi di openclaw.json tanpa cred file
 		mainStatus := h.App.Manager.GetStatus("main")
 		mainStatus.ID = "main"
 		mainStatus.Label = "Main Orchestrator"
-		mainInfo = AgentInfo{ID: "main", Label: "Main Orchestrator", Status: mainStatus}
+		mainInfo = agentInfoFromCred("main", &config.AgentCred{ID: "main", Label: "Main Orchestrator", OpenClawModel: "openclaw/main"}, mainStatus)
 	}
 
 	// Kumpulkan semua sub-agent (bukan main)

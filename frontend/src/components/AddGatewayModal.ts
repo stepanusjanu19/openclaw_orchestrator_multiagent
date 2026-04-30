@@ -50,7 +50,7 @@ export class AddGatewayModal {
       <div class="form-group">
         <label class="form-label" for="gw-agent">Pilih Agent</label>
         <select id="gw-agent" class="form-input" required></select>
-        <span class="form-help" id="gw-agent-help">Hanya agent aktif tanpa HTTP gateway aktif yang bisa dipilih.</span>
+        <span class="form-help" id="gw-agent-help">Hanya sub-agent terdaftar yang sedang running dan belum punya HTTP gateway aktif yang bisa dipilih. Main Agent tidak tersedia untuk Gateway.</span>
       </div>
 
       <div class="form-group">
@@ -163,7 +163,7 @@ export class AddGatewayModal {
       const ttlDays = this.formEl.querySelector<HTMLSelectElement>('#gw-ttl')!.value;
 
       if (!agentId) {
-        const message = 'Pilih agent aktif yang belum memiliki HTTP gateway aktif.';
+        const message = 'Pilih agent running yang belum memiliki HTTP gateway aktif.';
         showToast(message, 'error');
         this.renderCreateError(message);
         submitBtn.disabled = false;
@@ -218,7 +218,7 @@ export class AddGatewayModal {
       select.appendChild(empty);
       select.disabled = true;
       submitBtn.disabled = true;
-      help.textContent = 'Semua agent aktif sudah memiliki HTTP gateway aktif, atau belum ada agent yang running.';
+      help.textContent = 'Semua sub-agent running sudah memiliki HTTP gateway aktif, belum ada sub-agent running, atau hanya Main Agent yang aktif.';
       return;
     }
 

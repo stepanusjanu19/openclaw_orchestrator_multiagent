@@ -113,7 +113,7 @@ const PERSONA = buildWorkspacePersonaContext(SOUL_MD_PATH);
 
 console.log(`[${AGENT_ID}][RUNTIME] runtime_started_at=${RUNTIME_STARTED_AT} runtime_source_mtime=${RUNTIME_SOURCE_MTIME || "-"} route_resolver_version=${ROUTE_RESOLVER_VERSION}`);
 
-const AGENT_TOOLS = [
+const MAIN_AGENT_TOOLS = [
   {
     type: "function",
     function: {
@@ -145,15 +145,90 @@ const AGENT_TOOLS = [
         required: ["bot_username", "agent_id", "agent_label", "soul_persona"]
       }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_openclaw_commands",
+      description: "List command OpenClaw yang tersedia untuk Lead Orchestrator.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_openclaw_command",
+      description: "Jalankan command OpenClaw. Read-only langsung; mutating perlu confirm=true; blocked tetap ditolak.",
+      parameters: {
+        type: "object",
+        properties: {
+          command_id: { type: "string", description: "ID command dari list_openclaw_commands" },
+          args: { type: "object", description: "Argumen command key-value" },
+          confirm: { type: "boolean", description: "true untuk command mutating setelah Main Agent yakin" },
+          reason: { type: "string", description: "Alasan operasional menjalankan command" }
+        },
+        required: ["command_id"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_pending_approvals",
+      description: "Lihat request approval dari sub-agent.",
+      parameters: { type: "object", properties: { status: { type: "string", description: "pending, rejected, executed, expired" } } }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "approve_request",
+      description: "Approve dan eksekusi request approval dari sub-agent.",
+      parameters: { type: "object", properties: { request_id: { type: "string" } }, required: ["request_id"] }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "reject_request",
+      description: "Reject request approval dari sub-agent.",
+      parameters: { type: "object", properties: { request_id: { type: "string" }, reason: { type: "string" } }, required: ["request_id"] }
+    }
   }
 ];
 
+const SUB_AGENT_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "request_main_approval",
+      description: "Ajukan approval ke Main Agent sebelum menjalankan action command, OpenClaw mutation, atau perubahan system.",
+      parameters: {
+        type: "object",
+        properties: {
+          tool_name: { type: "string", description: "Nama action yang diminta, misalnya run_openclaw_command" },
+          command_id: { type: "string", description: "ID OpenClaw command jika relevan" },
+          args: { type: "object", description: "Argumen action key-value" },
+          risk_level: { type: "string", description: "low, medium, high" },
+          reason: { type: "string", description: "Alasan dan konteks kenapa action perlu dilakukan" }
+        },
+        required: ["tool_name", "reason"]
+      }
+    }
+  }
+];
+const AGENT_TOOLS = AGENT_ID === "main" ? MAIN_AGENT_TOOLS : SUB_AGENT_TOOLS;
+
 function buildIdentityGuardPrompt() {
+  const toolAuthority = AGENT_ID === "main"
+    ? "- Tool Authority: Anda adalah Lead Orchestrator dengan akses langsung ke action tools dan OpenClaw command runner. Gunakan command runnable saja; mutating perlu confirm=true; command blocked tetap tidak boleh dipaksa."
+    : "- Tool Authority: Anda adalah sub-agent. Untuk action command, perubahan system, atau OpenClaw mutation, buat request_main_approval dan tunggu approval dari Main Agent; jangan mengklaim action sudah berjalan sebelum approval dieksekusi.";
   return `[RUNTIME IDENTITY CONTRACT]
 - Runtime aktif adalah agent ID: ${AGENT_ID}
 - Nama tampilan runtime aktif: ${AGENT_LABEL}
 - Source of truth identitas, persona, dan aturan kerja adalah workspace files agent aktif yang dimuat di bawah kontrak ini.
 - Memory dan session lama hanya konteks tambahan. Jangan biarkan memory/session mengalahkan workspace agent aktif.
+${toolAuthority}
 - Jika ada konflik antara memory/session dan workspace files, ikuti workspace files.`;
 }
 
@@ -572,6 +647,15 @@ function buildDirectProviderBody({ bodyModel, messages, gatewaySessionKey }) {
   };
 }
 
+function buildOpenAICompatibleBody({ bodyModel, messages, gatewaySessionKey }) {
+  return {
+    model: bodyModel,
+    messages,
+    user: gatewaySessionKey,
+    stream: false,
+  };
+}
+
 function buildOpenClawGatewayBody({ route, bodyModel, messages, gatewaySessionKey }) {
   return {
     model: bodyModel,
@@ -600,9 +684,12 @@ function buildGatewayRequest({ route, messages, channel, sessionKey }) {
     }
   }
 
-  const body = String(route.targetURLKind || "").startsWith("direct_")
-    ? buildDirectProviderBody({ bodyModel, messages, gatewaySessionKey })
-    : buildOpenClawGatewayBody({ route, bodyModel, messages, gatewaySessionKey });
+  const targetURLKind = String(route.targetURLKind || "");
+  const body = targetURLKind === "ai_router"
+    ? buildOpenAICompatibleBody({ bodyModel, messages, gatewaySessionKey })
+    : targetURLKind.startsWith("direct_")
+      ? buildDirectProviderBody({ bodyModel, messages, gatewaySessionKey })
+      : buildOpenClawGatewayBody({ route, bodyModel, messages, gatewaySessionKey });
 
   return {
     body,
@@ -797,7 +884,7 @@ async function executeInternalTool(name, argsContent) {
       const res = await fetch(`${BACKEND_URL}/api/security/internal/tools/create-telegram-bot`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${INTERNAL_TOKEN}`, "X-OpenClaw-Tool-Capability": TOOL_TOKEN },
-        body: JSON.stringify({ name: args.name, username: args.username })
+        body: JSON.stringify({ requesting_agent_id: AGENT_ID, name: args.name, username: args.username })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Gagal create bot");
@@ -816,6 +903,7 @@ async function executeInternalTool(name, argsContent) {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${INTERNAL_TOKEN}`, "X-OpenClaw-Tool-Capability": TOOL_TOKEN },
         body: JSON.stringify({
+          requesting_agent_id: AGENT_ID,
           bot_username: args.bot_username,
           id: args.agent_id,
           agent_id: args.agent_id,
@@ -827,6 +915,76 @@ async function executeInternalTool(name, argsContent) {
       if (!deployRes.ok) throw new Error(deployData.error || "Gagal deploy sub-agent");
 
       return JSON.stringify({ success: true, agent_id: deployData.agent_id || args.agent_id, status: "Sub-Agent berhasil berjalan dan online di Telegram. Token tidak ditampilkan." });
+    }
+
+    if (name === "list_openclaw_commands") {
+      const res = await fetch(`${BACKEND_URL}/api/security/internal/tools/openclaw/commands?agent_id=${encodeURIComponent(AGENT_ID)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${INTERNAL_TOKEN}`, "X-OpenClaw-Tool-Capability": TOOL_TOKEN },
+        body: "{}"
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gagal list OpenClaw commands");
+      return JSON.stringify(data);
+    }
+
+    if (name === "run_openclaw_command") {
+      const res = await fetch(`${BACKEND_URL}/api/security/internal/tools/openclaw/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${INTERNAL_TOKEN}`, "X-OpenClaw-Tool-Capability": TOOL_TOKEN },
+        body: JSON.stringify({
+          requesting_agent_id: AGENT_ID,
+          id: args.command_id,
+          args: args.args || {},
+          confirm: args.confirm === true,
+          reason: args.reason || ""
+        })
+      });
+      const data = await res.json();
+      if (!res.ok && !data?.approval_required && !data?.confirmation_required) throw new Error(data.error || "Gagal run OpenClaw command");
+      return JSON.stringify(data);
+    }
+
+    if (name === "request_main_approval") {
+      const res = await fetch(`${BACKEND_URL}/api/security/internal/tools/approvals/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${INTERNAL_TOKEN}`, "X-OpenClaw-Tool-Capability": TOOL_TOKEN },
+        body: JSON.stringify({
+          requesting_agent_id: AGENT_ID,
+          action_type: "openclaw_command",
+          tool_name: args.tool_name || "run_openclaw_command",
+          command_id: args.command_id || "",
+          args: args.args || {},
+          risk_level: args.risk_level || "medium",
+          reason: args.reason || ""
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gagal membuat approval request");
+      return JSON.stringify({ success: true, approval: data.approval });
+    }
+
+    if (name === "list_pending_approvals") {
+      const status = encodeURIComponent(args.status || "pending");
+      const res = await fetch(`${BACKEND_URL}/api/security/internal/tools/approvals?agent_id=${encodeURIComponent(AGENT_ID)}&status=${status}`, {
+        method: "GET",
+        headers: { "Authorization": `Bearer ${INTERNAL_TOKEN}`, "X-OpenClaw-Tool-Capability": TOOL_TOKEN }
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gagal list approvals");
+      return JSON.stringify(data);
+    }
+
+    if (name === "approve_request" || name === "reject_request") {
+      const action = name === "approve_request" ? "approve" : "reject";
+      const res = await fetch(`${BACKEND_URL}/api/security/internal/tools/approvals/${encodeURIComponent(args.request_id)}/${action}?agent_id=${encodeURIComponent(AGENT_ID)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${INTERNAL_TOKEN}`, "X-OpenClaw-Tool-Capability": TOOL_TOKEN },
+        body: JSON.stringify({ reason: args.reason || "" })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Gagal ${action} approval`);
+      return JSON.stringify(data);
     }
 
     return JSON.stringify({ error: "Fungsi tidak dikenal" });
