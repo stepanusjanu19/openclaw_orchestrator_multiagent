@@ -108,10 +108,6 @@ multiagentp/
 │   └── src/
 │       ├── components/   AgentCard, LogViewer, PersonaEditor, StatusBar, modal/toast UI
 │       └── pages/        Dashboard, Code Tools, AI Router, Security, Visitor, UserBot, System
-├── openclaw-configs/     SOUL.md persona per agent
-│   ├── main/SOUL.md
-│   ├── dev/SOUL.md
-│   └── alpha/SOUL.md
 └── scripts/
     ├── setup.sh          Install semua dependencies
     ├── start-all.sh      Start backend + frontend + database
