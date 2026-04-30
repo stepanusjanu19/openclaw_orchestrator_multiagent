@@ -222,7 +222,7 @@ Buka browser Anda dan akses Dashboard di: **http://localhost:5173**
 
 ## 🧬 Personas (SOUL.md)
 
-Tiap agent punya persona berbeda di `openclaw-configs/<id>/SOUL.md`:
+Tiap agent punya persona berbeda di `.openclaw/workspace-<agent-id>/SOUL.md`:
 
 | Agent | Persona | Gaya |
 |-------|---------|------|
